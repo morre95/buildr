@@ -18,6 +18,9 @@
     "onCommand:buildr.runApprovedPlan",
     "onCommand:buildr.configureModel",
     "onCommand:buildr.indexWorkspace",
+    "onCommand:buildr.mcpList",
+    "onCommand:buildr.doctor",
+    "onCommand:buildr.debug",
     "onCommand:buildr.stop",
     "onChatParticipant:buildr.chat"
   ],
@@ -48,6 +51,18 @@
       {
         "command": "buildr.indexWorkspace",
         "title": "Buildr: Index Workspace"
+      },
+      {
+        "command": "buildr.mcpList",
+        "title": "Buildr: MCP List"
+      },
+      {
+        "command": "buildr.doctor",
+        "title": "Buildr: Doctor"
+      },
+      {
+        "command": "buildr.debug",
+        "title": "Buildr: Debug"
       }
     ],
     "chatParticipants": [

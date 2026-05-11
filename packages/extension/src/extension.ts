@@ -19,8 +19,10 @@ import {
 import * as vscode from "vscode";
 import { BuildrSecretStore } from "./credentials.js";
 import { registerBuildrChatParticipant } from "./native/chatParticipant.js";
+import { runDebugFromInput } from "./native/debugMode.js";
 import { readDiagnosticsSummary } from "./native/diagnostics.js";
 import { registerBuildrLanguageModelTools } from "./native/languageModelTools.js";
+import { showMcpDoctor, showMcpList } from "./native/mcpCommands.js";
 import { findTaskCommand } from "./native/tasks.js";
 import { type ApprovalMessage, StepPanel } from "./webview/stepPanel.js";
 
@@ -115,6 +117,9 @@ export function activate(context: vscode.ExtensionContext): void {
       const index = await buildWorkspaceIndex(root);
       vscode.window.showInformationMessage(`Buildr indexed ${index.files.length} file(s).`);
     }),
+    vscode.commands.registerCommand("buildr.mcpList", showMcpList),
+    vscode.commands.registerCommand("buildr.doctor", showMcpDoctor),
+    vscode.commands.registerCommand("buildr.debug", runDebugFromInput),
     vscode.commands.registerCommand("buildr.stop", () => {
       activeAbortController?.abort();
       activeAbortController = undefined;

@@ -17,7 +17,9 @@
     "onCommand:buildr.plan",
     "onCommand:buildr.runApprovedPlan",
     "onCommand:buildr.configureModel",
-    "onCommand:buildr.stop"
+    "onCommand:buildr.indexWorkspace",
+    "onCommand:buildr.stop",
+    "onChatParticipant:buildr.chat"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -42,6 +44,36 @@
       {
         "command": "buildr.stop",
         "title": "Buildr: Stop"
+      },
+      {
+        "command": "buildr.indexWorkspace",
+        "title": "Buildr: Index Workspace"
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "buildr.chat",
+        "name": "buildr",
+        "description": "Plan Buildr coding tasks from VS Code Chat."
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "buildr_workspaceContext",
+        "tags": ["buildr", "workspace"],
+        "toolReferenceName": "workspaceContext",
+        "displayName": "Buildr Workspace Context",
+        "modelDescription": "Find relevant files and summaries from the current workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Task or topic to search for."
+            }
+          },
+          "required": ["query"]
+        }
       }
     ],
     "configuration": {

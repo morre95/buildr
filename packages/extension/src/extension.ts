@@ -1,6 +1,8 @@
 import {
   applyTextPatch,
+  buildWorkspaceIndex,
   BuildrCore,
+  checkScopeFidelity,
   createFinalSummary,
   createTextPatch,
   eventFromPermissionDecision,
@@ -16,6 +18,10 @@ import {
 } from "@buildr/core";
 import * as vscode from "vscode";
 import { BuildrSecretStore } from "./credentials.js";
+import { registerBuildrChatParticipant } from "./native/chatParticipant.js";
+import { readDiagnosticsSummary } from "./native/diagnostics.js";
+import { registerBuildrLanguageModelTools } from "./native/languageModelTools.js";
+import { findTaskCommand } from "./native/tasks.js";
 import { type ApprovalMessage, StepPanel } from "./webview/stepPanel.js";
 
 let activeAbortController: AbortController | undefined;
@@ -33,6 +39,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const core = new BuildrCore();
   const stepPanel = new StepPanel(context.extensionUri);
   const secretStore = new BuildrSecretStore(context.secrets);
+  registerBuildrChatParticipant(context, core);
+  registerBuildrLanguageModelTools(context);
 
   stepPanel.onApproval((message) => {
     void handleApproval(message, stepPanel);
@@ -98,6 +106,15 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
       }
     }),
+    vscode.commands.registerCommand("buildr.indexWorkspace", async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (root === undefined) {
+        vscode.window.showWarningMessage("Open a workspace folder before indexing.");
+        return;
+      }
+      const index = await buildWorkspaceIndex(root);
+      vscode.window.showInformationMessage(`Buildr indexed ${index.files.length} file(s).`);
+    }),
     vscode.commands.registerCommand("buildr.stop", () => {
       activeAbortController?.abort();
       activeAbortController = undefined;
@@ -130,10 +147,11 @@ async function runPhase1A(stepPanel: StepPanel): Promise<void> {
     events.push(searchEvent);
   }
 
+  const suggestedTestCommand = await findTaskCommand("test");
   queuedVerificationCommand = await vscode.window.showInputBox({
     title: "Buildr: Optional Verification Command",
     prompt: "Command to run after approved patch, or leave blank to skip.",
-    value: "pnpm test",
+    value: suggestedTestCommand ?? "pnpm test",
     ignoreFocusOut: true
   });
   if (queuedVerificationCommand?.trim().length === 0) {
@@ -193,6 +211,7 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
         warnings: [],
         ...(approval.target === undefined ? {} : { target: approval.target })
       });
+      addScopeFidelityEvent(approval.target);
 
       if (queuedVerificationCommand !== undefined) {
         pendingApproval = createTerminalApproval(queuedVerificationCommand);
@@ -233,17 +252,40 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
   renderCurrentState(stepPanel, createFinalReportSummary());
 }
 
+function addScopeFidelityEvent(changedFile: string | undefined): void {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined || changedFile === undefined || currentPlan === undefined) {
+    return;
+  }
+
+  const approvedTargets = currentPlan.steps.flatMap((step) => step.targets);
+  const result = checkScopeFidelity({
+    workspaceRoot: root,
+    approvedTargets,
+    changedFiles: [changedFile]
+  });
+
+  events.push({
+    id: `scope:${Date.now()}`,
+    title: "Check scope fidelity",
+    status: result.ok ? "completed" : "blocked",
+    tool: "check_scope_fidelity",
+    target: changedFile,
+    summary: result.ok ? "Patch stayed within approved targets." : "Patch touched files outside approved targets.",
+    warnings: result.warnings
+  });
+}
+
 function readDiagnosticsEvent(): ExecutionEvent {
-  const diagnostics = vscode.languages.getDiagnostics();
-  const diagnosticCount = diagnostics.reduce((total, [, items]) => total + items.length, 0);
+  const diagnostics = readDiagnosticsSummary();
   return {
     id: "inspect:diagnostics",
     title: "Read diagnostics",
     status: "completed",
     tool: "read_diagnostics",
-    summary: diagnosticCount === 0 ? "No diagnostics reported." : `${diagnosticCount} diagnostic(s) reported.`,
+    summary: diagnostics.message,
     evidence: {
-      diagnosticsSummary: diagnosticCount === 0 ? "No diagnostics reported." : `${diagnosticCount} diagnostic(s) reported.`
+      diagnosticsSummary: diagnostics.message
     },
     warnings: []
   };

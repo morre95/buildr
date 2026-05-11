@@ -12,7 +12,7 @@ export function checkScopeFidelity(options: {
   approvedTargets: string[];
   changedFiles: string[];
 }): ScopeFidelityResult {
-  const approvedTargets = options.approvedTargets.filter((target) => !target.includes("${"));
+  const approvedTargets = options.approvedTargets.filter((target) => !target.includes("${") && !target.includes(" "));
   if (approvedTargets.length === 0) {
     return {
       ok: true,

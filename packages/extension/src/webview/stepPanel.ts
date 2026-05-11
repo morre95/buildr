@@ -59,7 +59,7 @@ export class StepPanel {
 function renderState(state: StepPanelState): string {
   const nonce = createNonce();
   const steps = state.plan.steps
-    .map((step) => `<li><strong>${escapeHtml(step.title)}</strong> <span>(${escapeHtml(step.kind)})</span></li>`)
+    .map((step) => `<li><strong>${escapeHtml(step.title)}</strong> <span>(${escapeHtml(step.kind)})</span><br><small>depends on: ${escapeHtml(step.dependsOn.join(", ") || "none")} · targets: ${escapeHtml(step.targets.join(", "))}</small></li>`)
     .join("");
   const events = state.events
     .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
@@ -115,12 +115,14 @@ function renderPendingApproval(approval: PendingApproval): string {
 }
 
 function renderEvidence(event: ExecutionEvent): string {
-  if (event.evidence === undefined && event.warnings.length === 0) {
+  if (event.evidence === undefined && event.warnings.length === 0 && event.target === undefined) {
     return "";
   }
 
   const evidence = event.evidence;
   const rows = [
+    event.tool === undefined ? "" : `Tool: ${event.tool}`,
+    event.target === undefined ? "" : `Target: ${event.target}`,
     evidence?.command === undefined ? "" : `Command: ${evidence.command}`,
     evidence?.exitCode === undefined ? "" : `Exit code: ${evidence.exitCode}`,
     evidence?.diagnosticsSummary === undefined ? "" : `Diagnostics: ${evidence.diagnosticsSummary}`,

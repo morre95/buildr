@@ -1,4 +1,11 @@
+export * from "./context/compression.js";
+export * from "./context/graph.js";
+export * from "./context/ranking.js";
+export * from "./context/workspaceIndex.js";
 export * from "./diff/textPatch.js";
+export * from "./docs/context7Provider.js";
+export * from "./memory/agentDocs.js";
+export * from "./memory/commonMistakes.js";
 export * from "./permissions/policy.js";
 export * from "./plans/schema.js";
 export * from "./providers/lmStudioNative.js";
@@ -14,3 +21,4 @@ export * from "./tools/builtins.js";
 export * from "./types.js";
 export * from "./verification/completionGate.js";
 export * from "./verification/contract.js";
+export * from "./verification/dualPass.js";

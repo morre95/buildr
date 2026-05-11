@@ -21,6 +21,8 @@ import {
   type ProviderId,
   type TextPatch
 } from "@buildr/core";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import * as vscode from "vscode";
 import { BuildrSecretStore } from "./credentials.js";
 import { registerBuildrChatParticipant } from "./native/chatParticipant.js";
@@ -37,10 +39,16 @@ let currentPlan: BuildrPlan | undefined;
 let events: ExecutionEvent[] = [];
 let pendingApproval: PendingApproval<TextPatch | TerminalApprovalPayload> | undefined;
 let queuedVerificationCommand: string | undefined;
+let queuedWriteTargets: PlanWriteTarget[] = [];
 
 interface TerminalApprovalPayload {
   command: string;
   cwd: string;
+}
+
+interface PlanWriteTarget {
+  path: string;
+  title: string;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -81,6 +89,7 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       currentPlan = result.plan;
       events = [];
+      queuedWriteTargets = [];
       if (result.warnings.length > 0) {
         events.push({
           id: `plan:fallback:${Date.now()}`,
@@ -203,6 +212,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("buildr.stop", () => {
       activeAbortController?.abort();
       activeAbortController = undefined;
+      queuedWriteTargets = [];
       events.push({
         id: `cancelled:${Date.now()}`,
         title: "Stop requested",
@@ -344,14 +354,21 @@ async function runPhase1A(stepPanel: StepPanel): Promise<void> {
   }
 
   const suggestedTestCommand = await findTaskCommand("test");
+  const defaultVerificationCommand = currentPlan.verification.commands[0] ?? suggestedTestCommand ?? "";
   queuedVerificationCommand = await vscode.window.showInputBox({
     title: "Buildr: Optional Verification Command",
     prompt: "Command to run after approved patch, or leave blank to skip.",
-    value: suggestedTestCommand ?? "pnpm test",
+    value: defaultVerificationCommand,
     ignoreFocusOut: true
   });
   if (queuedVerificationCommand?.trim().length === 0) {
     queuedVerificationCommand = undefined;
+  }
+
+  queuedWriteTargets = collectPlanWriteTargets(currentPlan);
+  if (queuedWriteTargets.length > 0) {
+    await queueNextPlanPatchApproval(stepPanel);
+    return;
   }
 
   let patchApproval: PendingApproval<TextPatch> | undefined;
@@ -420,6 +437,11 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
         ...(approval.target === undefined ? {} : { target: approval.target })
       });
       addScopeFidelityEvent(approval.target);
+
+      if (queuedWriteTargets.length > 0) {
+        await queueNextPlanPatchApproval(stepPanel);
+        return;
+      }
 
       if (queuedVerificationCommand !== undefined) {
         pendingApproval = createTerminalApproval(queuedVerificationCommand);
@@ -594,17 +616,132 @@ async function createPatchApprovalForActiveEditor(goal: string): Promise<Pending
   };
 }
 
-async function applyApprovedPatch(patch: TextPatch): Promise<void> {
-  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(patch.path));
-  const next = applyTextPatch(document.getText(), patch);
-  const edit = new vscode.WorkspaceEdit();
-  const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
-  edit.replace(document.uri, fullRange, next);
-  const applied = await vscode.workspace.applyEdit(edit);
-  if (!applied) {
-    throw new Error(`VS Code rejected the patch for ${patch.path}.`);
+async function queueNextPlanPatchApproval(stepPanel: StepPanel): Promise<void> {
+  const nextTarget = queuedWriteTargets.shift();
+  if (nextTarget === undefined || currentPlan === undefined) {
+    if (queuedVerificationCommand !== undefined) {
+      pendingApproval = createTerminalApproval(queuedVerificationCommand);
+      events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+      renderCurrentState(stepPanel);
+      return;
+    }
+    renderCurrentState(stepPanel, createFinalReportSummary());
+    return;
   }
-  await document.save();
+
+  try {
+    const approval = await createPatchApprovalForPlanTarget(currentPlan.goal, nextTarget);
+    pendingApproval = approval;
+    events.push(eventFromPermissionDecision(approval, "ask"));
+  } catch (error) {
+    events.push({
+      id: `patch:${Date.now()}:failed`,
+      title: `Propose patch for ${nextTarget.title}`,
+      status: "failed",
+      tool: "propose_patch",
+      target: nextTarget.path,
+      summary: error instanceof Error ? error.message : "Model patch proposal failed.",
+      warnings: []
+    });
+    await queueNextPlanPatchApproval(stepPanel);
+    return;
+  }
+
+  renderCurrentState(stepPanel);
+}
+
+async function createPatchApprovalForPlanTarget(goal: string, target: PlanWriteTarget): Promise<PendingApproval<TextPatch>> {
+  const before = await readTextFileIfExists(target.path);
+  if (before.length > 80_000) {
+    throw new Error(`Skipped ${target.path} because it is larger than 80 KB.`);
+  }
+
+  const configuredCore = createConfiguredCore();
+  const modelId = getConfiguredModelId();
+  const contextSummary = await createWorkspaceContextSummary(`${goal}\nCurrent target: ${target.path}`);
+  const rewriteOptions = {
+    goal: `${goal}\n\nImplement this plan step: ${target.title}`,
+    modelId,
+    path: target.path,
+    currentContent: before,
+    ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
+  };
+  const rewrite = await configuredCore.createFileRewriteFromModel(contextSummary === undefined ? rewriteOptions : {
+    ...rewriteOptions,
+    contextSummary
+  });
+  const patch = createTextPatch(target.path, before, rewrite.updatedContent);
+
+  return {
+    id: `approval:apply_patch:${Date.now()}`,
+    title: `Apply patch for ${target.title}`,
+    tool: "apply_patch",
+    target: target.path,
+    risk: before.length === 0 ? "medium" : "high",
+    details: `${rewrite.summary}\n\nFile: ${target.path}\nBefore hash: ${patch.beforeHash}\nAfter hash: ${patch.afterHash}\nWarnings: ${rewrite.warnings.join("; ") || "none"}`,
+    payload: patch
+  };
+}
+
+function collectPlanWriteTargets(plan: BuildrPlan): PlanWriteTarget[] {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const targets: PlanWriteTarget[] = [];
+  for (const step of plan.steps) {
+    if (step.kind !== "write") {
+      continue;
+    }
+    for (const target of step.targets) {
+      const path = resolvePlanTarget(root, target);
+      if (path === undefined || seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+      targets.push({ path, title: step.title });
+    }
+  }
+  return targets;
+}
+
+function resolvePlanTarget(root: string, target: string): string | undefined {
+  const trimmed = target.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed === "." ||
+    trimmed === "./" ||
+    trimmed.includes("${") ||
+    trimmed.includes("*") ||
+    trimmed.toLowerCase().includes("approved ") ||
+    trimmed.endsWith("/")
+  ) {
+    return undefined;
+  }
+
+  const resolved = resolve(root, trimmed);
+  const relativePath = relative(root, resolved);
+  if (relativePath.startsWith("..") || relativePath === "") {
+    return undefined;
+  }
+  return resolved;
+}
+
+async function readTextFileIfExists(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function applyApprovedPatch(patch: TextPatch): Promise<void> {
+  const current = await readTextFileIfExists(patch.path);
+  const next = applyTextPatch(current, patch);
+  await mkdir(dirname(patch.path), { recursive: true });
+  await writeFile(patch.path, next, "utf8");
 }
 
 function createTerminalApproval(command: string): PendingApproval<TerminalApprovalPayload> {

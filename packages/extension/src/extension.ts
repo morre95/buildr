@@ -15,6 +15,8 @@ import {
   searchCodebaseTool,
   type BuildrPlan,
   type ExecutionEvent,
+  type ModelAdapter,
+  type ModelInfo,
   type PendingApproval,
   type ProviderId,
   type TextPatch
@@ -163,18 +165,15 @@ export function activate(context: vscode.ExtensionContext): void {
         await config.update(urlKey, stripOpenAiVersionSuffix(nextUrl), vscode.ConfigurationTarget.Workspace);
       }
 
-      const currentModel = config.get<string>("modelId", "qwen2.5-coder");
-      const modelId = await vscode.window.showInputBox({
-        title: "Buildr: Model ID",
-        prompt: provider.value === "ollama"
-          ? "Ollama model name, such as qwen2.5-coder or llama3.1."
-          : "LM Studio loaded model id. If unsure, use the model id shown in LM Studio's local server page.",
-        value: currentModel,
-        ignoreFocusOut: true
+      const modelAdapter = BuildrCore.createModelAdapter({
+        provider: parseProvider(provider.value),
+        baseUrl: stripOpenAiVersionSuffix(nextUrl ?? currentUrl)
       });
-      if (modelId !== undefined && modelId.trim().length > 0) {
-        await config.update("modelId", modelId.trim(), vscode.ConfigurationTarget.Workspace);
+      const modelId = await selectModelId(modelAdapter, provider.label, config.get<string>("modelId", "qwen2.5-coder"));
+      if (modelId === undefined) {
+        return;
       }
+      await config.update("modelId", modelId, vscode.ConfigurationTarget.Workspace);
 
       const secret = await vscode.window.showInputBox({
         title: "Buildr: Optional Provider Secret",
@@ -244,6 +243,73 @@ function parseProvider(value: string): ProviderId {
 
 function stripOpenAiVersionSuffix(value: string): string {
   return value.trim().replace(/\/v1\/?$/u, "");
+}
+
+async function selectModelId(adapter: ModelAdapter, providerLabel: string, currentModelId: string): Promise<string | undefined> {
+  const models = await fetchProviderModels(adapter, providerLabel);
+  if (models.length === 0) {
+    return promptForModelId(providerLabel, currentModelId, "No models were returned by the provider. Enter a model id manually.");
+  }
+
+  const manualLabel = "Enter model id manually";
+  const items: vscode.QuickPickItem[] = [
+    ...models.map((model): vscode.QuickPickItem => ({
+      label: model.id,
+      description: model.provider,
+      ...(model.displayName === model.id ? {} : { detail: model.displayName })
+    })),
+    {
+      label: manualLabel,
+      description: "Use this if the desired model is not listed.",
+      detail: currentModelId
+    }
+  ];
+  const selected = await vscode.window.showQuickPick(items, {
+    title: `Buildr: Select ${providerLabel} Model`,
+    placeHolder: `Current: ${currentModelId}`,
+    matchOnDescription: true,
+    matchOnDetail: true,
+    ignoreFocusOut: true
+  });
+
+  if (selected === undefined) {
+    return undefined;
+  }
+  if (selected.label === manualLabel) {
+    return promptForModelId(providerLabel, currentModelId, "Enter the model id to send to the provider.");
+  }
+  return selected.label;
+}
+
+async function fetchProviderModels(adapter: ModelAdapter, providerLabel: string): Promise<ModelInfo[]> {
+  if (adapter.listModels === undefined) {
+    return [];
+  }
+
+  try {
+    return await vscode.window.withProgress({
+      location: vscode.ProgressLocation.Notification,
+      title: `Buildr: Fetching ${providerLabel} models`,
+      cancellable: false
+    }, async () => adapter.listModels?.() ?? []);
+  } catch (error) {
+    const action = await vscode.window.showWarningMessage(
+      `Buildr could not fetch ${providerLabel} models: ${error instanceof Error ? error.message : String(error)}`,
+      "Enter Manually"
+    );
+    return action === "Enter Manually" ? [] : [];
+  }
+}
+
+async function promptForModelId(providerLabel: string, currentModelId: string, prompt: string): Promise<string | undefined> {
+  const value = await vscode.window.showInputBox({
+    title: `Buildr: ${providerLabel} Model ID`,
+    prompt,
+    value: currentModelId,
+    ignoreFocusOut: true,
+    validateInput: (input) => input.trim().length === 0 ? "Model id is required." : undefined
+  });
+  return value?.trim();
 }
 
 async function createWorkspaceContextSummary(goal: string): Promise<string | undefined> {

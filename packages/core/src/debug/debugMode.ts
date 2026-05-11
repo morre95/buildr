@@ -45,7 +45,22 @@ export function observationsFromLog(content: string): DebugObservation[] {
     .split(/\r?\n/u)
     .filter((line) => line.trim().length > 0)
     .slice(0, 200)
-    .map((line) => ({ source: "log", message: line }));
+    .map((line) => ({
+      source: "log",
+      message: line,
+      ...extractLocation(line)
+    }));
+}
+
+function extractLocation(line: string): Pick<DebugObservation, "file" | "line"> {
+  const stackMatch = line.match(/\(?((?:[A-Za-z]:)?[./~\w-][^():\s]*\.(?:cjs|css|html|js|jsx|mjs|ts|tsx|json|py|go|rs|java|cs|cpp|c|h)):(\d+)(?::\d+)?\)?/u);
+  if (stackMatch?.[1] !== undefined) {
+    return {
+      file: stackMatch[1],
+      ...(stackMatch[2] === undefined ? {} : { line: Number(stackMatch[2]) })
+    };
+  }
+  return {};
 }
 
 function createHypotheses(observations: DebugObservation[], mistakes: CommonMistake[]): DebugHypothesis[] {

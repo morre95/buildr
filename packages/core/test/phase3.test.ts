@@ -64,4 +64,13 @@ describe("Phase 3 MCP and Debug Mode", () => {
     expect(short.hypotheses[0]?.id).toBe("log-too-short");
     expect(packageManifest.hypotheses[0]?.id).toBe("missing-package-manifest");
   });
+
+  it("extracts file locations from pasted logs", () => {
+    const observations = observationsFromLog("ReferenceError: foo is not defined\n    at main (src/app.js:12:5)");
+
+    expect(observations[1]).toMatchObject({
+      file: "src/app.js",
+      line: 12
+    });
+  });
 });

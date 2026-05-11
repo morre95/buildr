@@ -121,15 +121,59 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("buildr.configureModel", async () => {
       const config = vscode.workspace.getConfiguration("buildr.model");
-      const currentUrl = config.get<string>("ollamaBaseUrl", "http://127.0.0.1:11434");
+      const provider = await vscode.window.showQuickPick([
+        {
+          label: "Ollama",
+          value: "ollama",
+          description: "Uses /api/chat, usually http://127.0.0.1:11434"
+        },
+        {
+          label: "LM Studio",
+          value: "lmstudio-openai",
+          description: "Uses OpenAI-compatible /v1/chat/completions, usually http://127.0.0.1:1234"
+        },
+        {
+          label: "OpenAI-compatible",
+          value: "openai-compatible",
+          description: "Uses OpenAI-compatible /v1/chat/completions"
+        }
+      ], {
+        title: "Buildr: Model Provider",
+        placeHolder: `Current: ${config.get<string>("provider", "ollama")}`
+      });
+      if (provider === undefined) {
+        return;
+      }
+
+      await config.update("provider", provider.value, vscode.ConfigurationTarget.Workspace);
+
+      const urlKey = provider.value === "ollama" ? "ollamaBaseUrl" : "lmStudioBaseUrl";
+      const defaultUrl = provider.value === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234";
+      const currentUrl = config.get<string>(urlKey, defaultUrl);
       const nextUrl = await vscode.window.showInputBox({
-        title: "Buildr: Configure Ollama Endpoint",
+        title: `Buildr: Configure ${provider.label} Endpoint`,
+        prompt: provider.value === "ollama"
+          ? "Base URL only. Example: http://127.0.0.1:11434"
+          : "Base URL only, without /v1. Example: http://127.0.0.1:1234",
         value: currentUrl,
         ignoreFocusOut: true
       });
 
       if (nextUrl) {
-        await config.update("ollamaBaseUrl", nextUrl, vscode.ConfigurationTarget.Workspace);
+        await config.update(urlKey, stripOpenAiVersionSuffix(nextUrl), vscode.ConfigurationTarget.Workspace);
+      }
+
+      const currentModel = config.get<string>("modelId", "qwen2.5-coder");
+      const modelId = await vscode.window.showInputBox({
+        title: "Buildr: Model ID",
+        prompt: provider.value === "ollama"
+          ? "Ollama model name, such as qwen2.5-coder or llama3.1."
+          : "LM Studio loaded model id. If unsure, use the model id shown in LM Studio's local server page.",
+        value: currentModel,
+        ignoreFocusOut: true
+      });
+      if (modelId !== undefined && modelId.trim().length > 0) {
+        await config.update("modelId", modelId.trim(), vscode.ConfigurationTarget.Workspace);
       }
 
       const secret = await vscode.window.showInputBox({
@@ -142,6 +186,7 @@ export function activate(context: vscode.ExtensionContext): void {
         await secretStore.storeProviderSecret("openaiCompatible", secret);
         vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
       }
+      vscode.window.showInformationMessage(`Buildr model set to ${provider.label}.`);
     }),
     vscode.commands.registerCommand("buildr.openSettings", openBuildrSettings),
     vscode.commands.registerCommand("buildr.indexWorkspace", async () => {
@@ -195,6 +240,10 @@ function parseProvider(value: string): ProviderId {
     return value;
   }
   return "ollama";
+}
+
+function stripOpenAiVersionSuffix(value: string): string {
+  return value.trim().replace(/\/v1\/?$/u, "");
 }
 
 async function createWorkspaceContextSummary(goal: string): Promise<string | undefined> {

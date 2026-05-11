@@ -41,7 +41,7 @@ export async function openBuildrSettings(): Promise<void> {
       await updateInput("buildr.model", "ollamaBaseUrl", "Ollama endpoint reachable from this extension host.", target);
       break;
     case "LM Studio base URL":
-      await updateInput("buildr.model", "lmStudioBaseUrl", "LM Studio endpoint reachable from this extension host.", target);
+      await updateInput("buildr.model", "lmStudioBaseUrl", "LM Studio base URL reachable from this extension host. Do not include /v1; Buildr adds it.", target);
       break;
     case "Token budget":
       await updateNumber("buildr.context", "tokenBudget", "Maximum context token budget.", target);

@@ -1,12 +1,38 @@
-import { BuildrCore } from "@buildr/core";
+import {
+  applyTextPatch,
+  BuildrCore,
+  createFinalSummary,
+  createTextPatch,
+  eventFromPermissionDecision,
+  requireTrustedWorkspace,
+  runVerificationCommand,
+  searchCodebaseTool,
+  type BuildrPlan,
+  type ExecutionEvent,
+  type PendingApproval,
+  type TextPatch
+} from "@buildr/core";
 import * as vscode from "vscode";
-import { StepPanel } from "./webview/stepPanel.js";
+import { type ApprovalMessage, StepPanel } from "./webview/stepPanel.js";
 
 let activeAbortController: AbortController | undefined;
+let currentPlan: BuildrPlan | undefined;
+let events: ExecutionEvent[] = [];
+let pendingApproval: PendingApproval<TextPatch | TerminalApprovalPayload> | undefined;
+let queuedVerificationCommand: string | undefined;
+
+interface TerminalApprovalPayload {
+  command: string;
+  cwd: string;
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   const core = new BuildrCore();
   const stepPanel = new StepPanel(context.extensionUri);
+
+  stepPanel.onApproval((message) => {
+    void handleApproval(message, stepPanel);
+  });
 
   context.subscriptions.push(
     vscode.commands.registerCommand("buildr.plan", async () => {
@@ -21,17 +47,28 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       activeAbortController = new AbortController();
-      const plan = core.createPlan(goal);
-      stepPanel.showPlan(plan);
-      vscode.window.showInformationMessage(`Buildr created a ${plan.steps.length}-step plan.`);
+      currentPlan = core.createPlan(goal);
+      events = [];
+      pendingApproval = undefined;
+      queuedVerificationCommand = undefined;
+      renderCurrentState(stepPanel);
+      vscode.window.showInformationMessage(`Buildr created a ${currentPlan.steps.length}-step plan.`);
     }),
-    vscode.commands.registerCommand("buildr.runApprovedPlan", () => {
-      if (!vscode.workspace.isTrusted) {
-        vscode.window.showWarningMessage("Buildr execution is disabled until this workspace is trusted.");
+    vscode.commands.registerCommand("buildr.runApprovedPlan", async () => {
+      try {
+        requireTrustedWorkspace(vscode.workspace.isTrusted);
+      } catch (error) {
+        vscode.window.showWarningMessage(error instanceof Error ? error.message : "Buildr execution is blocked.");
         return;
       }
 
-      vscode.window.showInformationMessage("Buildr Phase 1A can plan tasks; approved execution wiring is next.");
+      if (currentPlan === undefined) {
+        vscode.window.showWarningMessage("Create a Buildr plan before running approved steps.");
+        return;
+      }
+
+      activeAbortController = new AbortController();
+      await runPhase1A(stepPanel);
     }),
     vscode.commands.registerCommand("buildr.configureModel", async () => {
       const config = vscode.workspace.getConfiguration("buildr.model");
@@ -56,4 +93,226 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   activeAbortController?.abort();
+}
+
+async function runPhase1A(stepPanel: StepPanel): Promise<void> {
+  if (currentPlan === undefined) {
+    return;
+  }
+
+  events.push(readDiagnosticsEvent());
+
+  const searchEvent = await searchWorkspaceEvent(currentPlan.goal);
+  if (searchEvent !== undefined) {
+    events.push(searchEvent);
+  }
+
+  queuedVerificationCommand = await vscode.window.showInputBox({
+    title: "Buildr: Optional Verification Command",
+    prompt: "Command to run after approved patch, or leave blank to skip.",
+    value: "pnpm test",
+    ignoreFocusOut: true
+  });
+  if (queuedVerificationCommand?.trim().length === 0) {
+    queuedVerificationCommand = undefined;
+  }
+
+  const patchApproval = await createSelectionPatchApproval();
+  if (patchApproval !== undefined) {
+    pendingApproval = patchApproval;
+    events.push(eventFromPermissionDecision(patchApproval, "ask"));
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  if (queuedVerificationCommand !== undefined) {
+    pendingApproval = createTerminalApproval(queuedVerificationCommand);
+    events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  events.push({
+    id: "complete:no-actions",
+    title: "Complete approved read-only run",
+    status: "completed",
+    summary: "No active text selection or verification command was provided, so Buildr completed the read-only inspection.",
+    warnings: []
+  });
+  renderCurrentState(stepPanel, createFinalSummary(events));
+}
+
+async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): Promise<void> {
+  if (pendingApproval === undefined || message.id !== pendingApproval.id) {
+    return;
+  }
+
+  const approval = pendingApproval;
+  pendingApproval = undefined;
+
+  if (message.decision === "deny") {
+    events.push(eventFromPermissionDecision(approval, "deny"));
+    renderCurrentState(stepPanel, createFinalSummary(events));
+    return;
+  }
+
+  events.push(eventFromPermissionDecision(approval, "allow"));
+
+  try {
+    if (approval.tool === "apply_patch") {
+      await applyApprovedPatch(approval.payload as TextPatch);
+      events.push({
+        id: `${approval.id}:applied`,
+        title: "Apply approved patch",
+        status: "completed",
+        tool: "apply_patch",
+        summary: `Applied patch to ${approval.target ?? "selected file"}.`,
+        warnings: [],
+        ...(approval.target === undefined ? {} : { target: approval.target })
+      });
+
+      if (queuedVerificationCommand !== undefined) {
+        pendingApproval = createTerminalApproval(queuedVerificationCommand);
+        events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+        renderCurrentState(stepPanel);
+        return;
+      }
+    } else if (approval.tool === "run_terminal") {
+      const payload = approval.payload as TerminalApprovalPayload;
+      const commandOptions = {
+        cwd: payload.cwd,
+        ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
+      };
+      const evidence = await runVerificationCommand(payload.command, commandOptions);
+      events.push({
+        id: `${approval.id}:completed`,
+        title: "Run approved verification command",
+        status: evidence.exitCode === 0 ? "completed" : "failed",
+        tool: "run_terminal",
+        target: payload.cwd,
+        summary: `Command exited with ${evidence.exitCode ?? "unknown"}.`,
+        evidence,
+        warnings: []
+      });
+    }
+  } catch (error) {
+    events.push({
+      id: `${approval.id}:failed`,
+      title: `${approval.title} failed`,
+      status: "failed",
+      tool: approval.tool,
+      summary: error instanceof Error ? error.message : "Unknown execution failure.",
+      warnings: [],
+      ...(approval.target === undefined ? {} : { target: approval.target })
+    });
+  }
+
+  renderCurrentState(stepPanel, createFinalSummary(events));
+}
+
+function readDiagnosticsEvent(): ExecutionEvent {
+  const diagnostics = vscode.languages.getDiagnostics();
+  const diagnosticCount = diagnostics.reduce((total, [, items]) => total + items.length, 0);
+  return {
+    id: "inspect:diagnostics",
+    title: "Read diagnostics",
+    status: "completed",
+    tool: "read_diagnostics",
+    summary: diagnosticCount === 0 ? "No diagnostics reported." : `${diagnosticCount} diagnostic(s) reported.`,
+    evidence: {
+      diagnosticsSummary: diagnosticCount === 0 ? "No diagnostics reported." : `${diagnosticCount} diagnostic(s) reported.`
+    },
+    warnings: []
+  };
+}
+
+async function searchWorkspaceEvent(goal: string): Promise<ExecutionEvent | undefined> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined) {
+    return undefined;
+  }
+
+  const query = goal.split(/\s+/u).find((part) => part.length > 3) ?? goal;
+  const result = await searchCodebaseTool(root, query);
+  return {
+    id: "inspect:search",
+    title: "Search workspace",
+    status: result.ok ? "completed" : "failed",
+    tool: "search_codebase",
+    target: root,
+    summary: result.summary,
+    warnings: result.warnings
+  };
+}
+
+async function createSelectionPatchApproval(): Promise<PendingApproval<TextPatch> | undefined> {
+  const editor = vscode.window.activeTextEditor;
+  if (editor === undefined || editor.selection.isEmpty || editor.document.uri.scheme !== "file") {
+    return undefined;
+  }
+
+  const replacement = await vscode.window.showInputBox({
+    title: "Buildr: Replacement Text",
+    prompt: "Replacement text for the active selection. Leave blank to skip patch proposal.",
+    ignoreFocusOut: true
+  });
+  if (replacement === undefined || replacement.length === 0) {
+    return undefined;
+  }
+
+  const before = editor.document.getText();
+  const selectionStart = editor.document.offsetAt(editor.selection.start);
+  const selectionEnd = editor.document.offsetAt(editor.selection.end);
+  const after = `${before.slice(0, selectionStart)}${replacement}${before.slice(selectionEnd)}`;
+  const patch = createTextPatch(editor.document.uri.fsPath, before, after);
+
+  return {
+    id: `approval:apply_patch:${Date.now()}`,
+    title: "Apply active-selection patch",
+    tool: "apply_patch",
+    target: editor.document.uri.fsPath,
+    risk: "medium",
+    details: `Replace selected text in ${editor.document.uri.fsPath}.\n\nBefore hash: ${patch.beforeHash}\nAfter hash: ${patch.afterHash}`,
+    payload: patch
+  };
+}
+
+async function applyApprovedPatch(patch: TextPatch): Promise<void> {
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(patch.path));
+  const next = applyTextPatch(document.getText(), patch);
+  const edit = new vscode.WorkspaceEdit();
+  const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
+  edit.replace(document.uri, fullRange, next);
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    throw new Error(`VS Code rejected the patch for ${patch.path}.`);
+  }
+  await document.save();
+}
+
+function createTerminalApproval(command: string): PendingApproval<TerminalApprovalPayload> {
+  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  return {
+    id: `approval:run_terminal:${Date.now()}`,
+    title: "Run verification command",
+    tool: "run_terminal",
+    target: cwd,
+    risk: "medium",
+    details: `Command: ${command}\nCwd: ${cwd}\nTimeout: 120000ms`,
+    payload: { command, cwd }
+  };
+}
+
+function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
+  if (currentPlan === undefined) {
+    return;
+  }
+
+  const state = {
+    plan: currentPlan,
+    events,
+    ...(pendingApproval === undefined ? {} : { pendingApproval }),
+    ...(finalSummary === undefined ? {} : { finalSummary })
+  };
+  stepPanel.showState(state);
 }

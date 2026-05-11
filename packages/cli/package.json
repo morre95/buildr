@@ -1,18 +1,29 @@
 {
   "name": "buildr-agent",
   "version": "0.0.0",
-  "private": true,
+  "private": false,
+  "description": "Buildr local-model-first agent CLI.",
   "type": "module",
   "bin": {
     "buildr": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -b",
     "lint": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@buildr/core": "workspace:*"
+    "@buildr/core": "workspace:*",
+    "ink": "^7.0.2",
+    "react": "^19.2.6"
   }
 }

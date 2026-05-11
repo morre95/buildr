@@ -13,17 +13,6 @@
   "engines": {
     "vscode": "^1.96.0"
   },
-  "activationEvents": [
-    "onCommand:buildr.plan",
-    "onCommand:buildr.runApprovedPlan",
-    "onCommand:buildr.configureModel",
-    "onCommand:buildr.indexWorkspace",
-    "onCommand:buildr.mcpList",
-    "onCommand:buildr.doctor",
-    "onCommand:buildr.debug",
-    "onCommand:buildr.stop",
-    "onChatParticipant:buildr.chat"
-  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
@@ -43,6 +32,10 @@
       {
         "command": "buildr.configureModel",
         "title": "Buildr: Configure Model"
+      },
+      {
+        "command": "buildr.openSettings",
+        "title": "Buildr: Open Settings"
       },
       {
         "command": "buildr.stop",
@@ -97,20 +90,64 @@
         "buildr.model.provider": {
           "type": "string",
           "default": "ollama",
-          "enum": ["ollama"],
-          "description": "Default model provider for the Phase 1A vertical slice."
+          "enum": ["ollama", "lmstudio-openai", "lmstudio-native", "openai-compatible"],
+          "description": "Default model provider used by Buildr."
         },
         "buildr.model.ollamaBaseUrl": {
           "type": "string",
           "default": "http://127.0.0.1:11434",
           "description": "Ollama endpoint reachable from the active extension host."
+        },
+        "buildr.model.lmStudioBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:1234",
+          "description": "LM Studio endpoint reachable from the active extension host."
+        },
+        "buildr.context.tokenBudget": {
+          "type": "number",
+          "default": 32000,
+          "minimum": 1000,
+          "description": "Maximum context token budget Buildr should target."
+        },
+        "buildr.permissions.defaultWritePolicy": {
+          "type": "string",
+          "default": "require_approval",
+          "enum": ["context_review", "require_approval", "always_confirm", "always_deny"],
+          "description": "Default policy for tools that can modify files or run commands."
+        },
+        "buildr.privacy.cloudSendPolicy": {
+          "type": "string",
+          "default": "ask",
+          "enum": ["never", "ask", "allow"],
+          "description": "Controls whether Buildr may send workspace context to non-local providers."
+        },
+        "buildr.rules.rulePacks": {
+          "type": "array",
+          "default": ["agent-behavior", "verification", "git-workflow"],
+          "items": {
+            "type": "string"
+          },
+          "description": "Rule packs Buildr applies before completion."
+        },
+        "buildr.verification.level": {
+          "type": "string",
+          "default": "standard",
+          "enum": ["light", "standard", "strict"],
+          "description": "Verification strictness for completion gates and warnings."
+        },
+        "buildr.embeddings.provider": {
+          "type": "string",
+          "default": "local-transformers",
+          "enum": ["local-transformers", "ollama", "lmstudio-openai", "disabled"],
+          "description": "Embedding provider for semantic context ranking."
         }
       }
     }
   },
   "scripts": {
     "build": "tsc -b",
-    "lint": "tsc -b --pretty false"
+    "lint": "tsc -b --pretty false",
+    "package": "XDG_CACHE_HOME=../../.pnpm-cache pnpm dlx @vscode/vsce package"
   },
   "dependencies": {
     "@buildr/core": "workspace:*"

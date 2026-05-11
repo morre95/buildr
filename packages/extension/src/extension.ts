@@ -23,6 +23,7 @@ import { runDebugFromInput } from "./native/debugMode.js";
 import { readDiagnosticsSummary } from "./native/diagnostics.js";
 import { registerBuildrLanguageModelTools } from "./native/languageModelTools.js";
 import { showMcpDoctor, showMcpList } from "./native/mcpCommands.js";
+import { openBuildrSettings } from "./native/settings.js";
 import { findTaskCommand } from "./native/tasks.js";
 import { type ApprovalMessage, StepPanel } from "./webview/stepPanel.js";
 
@@ -108,6 +109,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
       }
     }),
+    vscode.commands.registerCommand("buildr.openSettings", openBuildrSettings),
     vscode.commands.registerCommand("buildr.indexWorkspace", async () => {
       const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
       if (root === undefined) {

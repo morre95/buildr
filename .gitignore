@@ -5,6 +5,7 @@
 ._*
 node_modules/
 .corepack/
+.pnpm-cache/
 .pnpm-store/
 dist/
 out/

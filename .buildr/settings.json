@@ -3,7 +3,8 @@
     "defaultProvider": "ollama",
     "defaultModel": "qwen2.5-coder",
     "baseUrls": {
-      "ollama": "http://127.0.0.1:11434"
+      "ollama": "http://127.0.0.1:11434",
+      "lmstudio-openai": "http://127.0.0.1:1234"
     },
     "credentialRefs": {}
   },
@@ -11,6 +12,12 @@
     "maxTokens": 32000,
     "respectGitignore": true,
     "redactSecrets": true
+  },
+  "embeddings": {
+    "provider": "local-transformers",
+    "localModel": "Xenova/all-MiniLM-L6-v2",
+    "ollamaModel": "nomic-embed-text",
+    "lmStudioModel": "text-embedding-nomic-embed-text-v1.5"
   },
   "agent": {
     "maxIterationsPerStep": 5,
@@ -29,5 +36,8 @@
     "enabled": false,
     "includePrompts": false,
     "includeFilePaths": false
+  },
+  "privacy": {
+    "cloudSendPolicy": "ask"
   }
 }

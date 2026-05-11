@@ -9,6 +9,7 @@
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "lint": "tsc -b --pretty false",
+    "package:extension": "pnpm --filter buildr-vscode package",
     "test": "vitest run",
     "test:watch": "vitest"
   },

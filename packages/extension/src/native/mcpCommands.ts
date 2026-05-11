@@ -1,4 +1,5 @@
 import {
+  assessRemoteCompatibility,
   createMcpRegistrySnapshot,
   loadWorkspaceMcpConfig,
   runMcpDoctor
@@ -30,6 +31,15 @@ export async function showMcpDoctor(): Promise<void> {
   }
 
   const result = runMcpDoctor(createMcpRegistrySnapshot(await loadWorkspaceMcpConfig(root)));
-  const message = result.warnings.length > 0 ? `${result.summary}\n${result.warnings.join("\n")}` : result.summary;
+  const modelBaseUrl = vscode.workspace.getConfiguration("buildr.model").get<string>("ollamaBaseUrl");
+  const remote = assessRemoteCompatibility({
+    isTrusted: vscode.workspace.isTrusted,
+    uiKind: vscode.env.uiKind === vscode.UIKind.Web ? "web" : "desktop",
+    ...(vscode.env.remoteName === undefined ? {} : { remoteName: vscode.env.remoteName }),
+    ...(modelBaseUrl === undefined ? {} : { modelBaseUrl }),
+    env: process.env
+  });
+  const warnings = [...result.warnings, ...remote.checks.filter((check) => !check.ok).map((check) => check.message)];
+  const message = warnings.length > 0 ? `${result.summary}\n${remote.summary}\n${warnings.join("\n")}` : `${result.summary}\n${remote.summary}`;
   vscode.window.showInformationMessage(message);
 }

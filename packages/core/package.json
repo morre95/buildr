@@ -15,5 +15,8 @@
     "build": "tsc -b",
     "lint": "tsc -b --pretty false",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0"
   }
 }

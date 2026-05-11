@@ -17,6 +17,8 @@ describe("Phase 2 context and memory", () => {
     await mkdir(join(root, "src"));
     await writeFile(join(root, "src", "auth.ts"), "export function validateToken() { return true; }\n");
     await writeFile(join(root, "src", "auth.test.ts"), "import { validateToken } from './auth';\n");
+    await writeFile(join(root, ".buildrignore"), "src/ignored.ts\n");
+    await writeFile(join(root, "src", "ignored.ts"), "export const ignoredSecret = true;\n");
 
     const index = await buildWorkspaceIndex(root);
     const ranked = rankWorkspaceContext(index, "validate token auth");
@@ -24,6 +26,7 @@ describe("Phase 2 context and memory", () => {
     const graph = buildContextGraph(index);
 
     expect(index.files.map((file) => file.relativePath)).toContain("src/auth.ts");
+    expect(index.files.map((file) => file.relativePath)).not.toContain("src/ignored.ts");
     expect(ranked[0]?.file.relativePath).toBe("src/auth.ts");
     expect(compressed.includedFiles.length).toBeGreaterThan(0);
     expect(graph.nodes).toContain("src/auth.ts");

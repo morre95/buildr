@@ -103,6 +103,11 @@
           "default": "http://127.0.0.1:1234",
           "description": "LM Studio endpoint reachable from the active extension host."
         },
+        "buildr.model.modelId": {
+          "type": "string",
+          "default": "qwen2.5-coder",
+          "description": "Default model id sent to the configured provider."
+        },
         "buildr.context.tokenBudget": {
           "type": "number",
           "default": 32000,

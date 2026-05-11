@@ -3,10 +3,12 @@ import {
   buildWorkspaceIndex,
   BuildrCore,
   checkScopeFidelity,
+  compressRankedContext,
   createFinalSummary,
   createTextPatch,
   eventFromPermissionDecision,
   loadBuiltInRulePacks,
+  rankWorkspaceContext,
   requireTrustedWorkspace,
   runCompletionGate,
   runVerificationCommand,
@@ -14,6 +16,7 @@ import {
   type BuildrPlan,
   type ExecutionEvent,
   type PendingApproval,
+  type ProviderId,
   type TextPatch
 } from "@buildr/core";
 import * as vscode from "vscode";
@@ -62,12 +65,43 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       activeAbortController = new AbortController();
-      currentPlan = core.createPlan(goal);
+      const configuredCore = createConfiguredCore();
+      const modelId = getConfiguredModelId();
+      const contextSummary = await createWorkspaceContextSummary(goal);
+      const planOptions = {
+        goal,
+        modelId,
+        signal: activeAbortController.signal
+      };
+      const result = await configuredCore.createPlanFromModel(contextSummary === undefined ? planOptions : {
+        ...planOptions,
+        contextSummary
+      });
+      currentPlan = result.plan;
       events = [];
+      if (result.warnings.length > 0) {
+        events.push({
+          id: `plan:fallback:${Date.now()}`,
+          title: "Create model-backed plan",
+          status: "completed",
+          tool: "model_plan",
+          summary: `Using fallback plan for ${goal}.`,
+          warnings: result.warnings
+        });
+      } else {
+        events.push({
+          id: `plan:model:${Date.now()}`,
+          title: "Create model-backed plan",
+          status: "completed",
+          tool: "model_plan",
+          summary: `Created plan with ${configuredCore.model.displayName} model ${modelId}.`,
+          warnings: []
+        });
+      }
       pendingApproval = undefined;
       queuedVerificationCommand = undefined;
       renderCurrentState(stepPanel);
-      vscode.window.showInformationMessage(`Buildr created a ${currentPlan.steps.length}-step plan.`);
+      vscode.window.showInformationMessage(`Buildr created a ${currentPlan.steps.length}-step plan (${result.source}).`);
     }),
     vscode.commands.registerCommand("buildr.runApprovedPlan", async () => {
       try {
@@ -138,6 +172,46 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
+function createConfiguredCore(): BuildrCore {
+  const modelConfig = vscode.workspace.getConfiguration("buildr.model");
+  const provider = modelConfig.get<string>("provider", "ollama");
+  const baseUrl = provider === "lmstudio-openai" || provider === "lmstudio-native" || provider === "openai-compatible"
+    ? modelConfig.get<string>("lmStudioBaseUrl", "http://127.0.0.1:1234")
+    : modelConfig.get<string>("ollamaBaseUrl", "http://127.0.0.1:11434");
+  const model = BuildrCore.createModelAdapter({
+    provider: parseProvider(provider),
+    baseUrl
+  });
+  return new BuildrCore({ model });
+}
+
+function getConfiguredModelId(): string {
+  const modelConfig = vscode.workspace.getConfiguration("buildr.model");
+  return modelConfig.get<string>("modelId", "qwen2.5-coder");
+}
+
+function parseProvider(value: string): ProviderId {
+  if (value === "ollama" || value === "lmstudio-openai" || value === "lmstudio-native" || value === "openai-compatible") {
+    return value;
+  }
+  return "ollama";
+}
+
+async function createWorkspaceContextSummary(goal: string): Promise<string | undefined> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined) {
+    return undefined;
+  }
+  try {
+    const index = await buildWorkspaceIndex(root);
+    const ranked = rankWorkspaceContext(index, goal, 8);
+    const compressed = compressRankedContext(ranked, 3000);
+    return compressed.text;
+  } catch (error) {
+    return `Workspace context indexing failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 export function deactivate(): void {
   activeAbortController?.abort();
 }
@@ -165,7 +239,19 @@ async function runPhase1A(stepPanel: StepPanel): Promise<void> {
     queuedVerificationCommand = undefined;
   }
 
-  const patchApproval = await createSelectionPatchApproval();
+  let patchApproval: PendingApproval<TextPatch> | undefined;
+  try {
+    patchApproval = await createPatchApprovalForActiveEditor(currentPlan.goal);
+  } catch (error) {
+    events.push({
+      id: `patch:model-failed:${Date.now()}`,
+      title: "Propose model patch",
+      status: "failed",
+      tool: "propose_patch",
+      summary: error instanceof Error ? error.message : "Model patch proposal failed.",
+      warnings: []
+    });
+  }
   if (patchApproval !== undefined) {
     pendingApproval = patchApproval;
     events.push(eventFromPermissionDecision(patchApproval, "ask"));
@@ -317,34 +403,78 @@ async function searchWorkspaceEvent(goal: string): Promise<ExecutionEvent | unde
   };
 }
 
-async function createSelectionPatchApproval(): Promise<PendingApproval<TextPatch> | undefined> {
+async function createPatchApprovalForActiveEditor(goal: string): Promise<PendingApproval<TextPatch> | undefined> {
   const editor = vscode.window.activeTextEditor;
-  if (editor === undefined || editor.selection.isEmpty || editor.document.uri.scheme !== "file") {
+  if (editor === undefined || editor.document.uri.scheme !== "file") {
     return undefined;
   }
 
-  const replacement = await vscode.window.showInputBox({
-    title: "Buildr: Replacement Text",
-    prompt: "Replacement text for the active selection. Leave blank to skip patch proposal.",
-    ignoreFocusOut: true
-  });
-  if (replacement === undefined || replacement.length === 0) {
-    return undefined;
+  if (!editor.selection.isEmpty) {
+    const replacement = await vscode.window.showInputBox({
+      title: "Buildr: Replacement Text",
+      prompt: "Replacement text for the active selection. Leave blank to ask the configured model for a full-file patch.",
+      ignoreFocusOut: true
+    });
+    if (replacement !== undefined && replacement.length > 0) {
+      const before = editor.document.getText();
+      const selectionStart = editor.document.offsetAt(editor.selection.start);
+      const selectionEnd = editor.document.offsetAt(editor.selection.end);
+      const after = `${before.slice(0, selectionStart)}${replacement}${before.slice(selectionEnd)}`;
+      const patch = createTextPatch(editor.document.uri.fsPath, before, after);
+
+      return {
+        id: `approval:apply_patch:${Date.now()}`,
+        title: "Apply active-selection patch",
+        tool: "apply_patch",
+        target: editor.document.uri.fsPath,
+        risk: "medium",
+        details: `Replace selected text in ${editor.document.uri.fsPath}.\n\nBefore hash: ${patch.beforeHash}\nAfter hash: ${patch.afterHash}`,
+        payload: patch
+      };
+    }
   }
 
   const before = editor.document.getText();
-  const selectionStart = editor.document.offsetAt(editor.selection.start);
-  const selectionEnd = editor.document.offsetAt(editor.selection.end);
-  const after = `${before.slice(0, selectionStart)}${replacement}${before.slice(selectionEnd)}`;
-  const patch = createTextPatch(editor.document.uri.fsPath, before, after);
+  if (before.length > 80_000) {
+    vscode.window.showWarningMessage("Buildr skipped model patch proposal because the active file is larger than 80 KB.");
+    return undefined;
+  }
+
+  const provider = vscode.workspace.getConfiguration("buildr.model").get<string>("provider", "ollama");
+  if (provider === "openai-compatible") {
+    const approval = await vscode.window.showWarningMessage(
+      "Buildr is about to send the active file to the configured OpenAI-compatible endpoint. Continue only if this endpoint is trusted.",
+      { modal: true },
+      "Send"
+    );
+    if (approval !== "Send") {
+      return undefined;
+    }
+  }
+
+  const configuredCore = createConfiguredCore();
+  const modelId = getConfiguredModelId();
+  const contextSummary = await createWorkspaceContextSummary(goal);
+  const rewriteOptions = {
+    goal,
+    modelId,
+    path: editor.document.uri.fsPath,
+    currentContent: before,
+    ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
+  };
+  const rewrite = await configuredCore.createFileRewriteFromModel(contextSummary === undefined ? rewriteOptions : {
+    ...rewriteOptions,
+    contextSummary
+  });
+  const patch = createTextPatch(editor.document.uri.fsPath, before, rewrite.updatedContent);
 
   return {
     id: `approval:apply_patch:${Date.now()}`,
-    title: "Apply active-selection patch",
+    title: "Apply model-proposed file patch",
     tool: "apply_patch",
     target: editor.document.uri.fsPath,
-    risk: "medium",
-    details: `Replace selected text in ${editor.document.uri.fsPath}.\n\nBefore hash: ${patch.beforeHash}\nAfter hash: ${patch.afterHash}`,
+    risk: "high",
+    details: `${rewrite.summary}\n\nFile: ${editor.document.uri.fsPath}\nBefore hash: ${patch.beforeHash}\nAfter hash: ${patch.afterHash}\nWarnings: ${rewrite.warnings.join("; ") || "none"}`,
     payload: patch
   };
 }

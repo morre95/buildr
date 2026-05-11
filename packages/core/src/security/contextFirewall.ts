@@ -1,4 +1,6 @@
 import { basename } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 export interface ContextFirewallDecision {
   allowed: boolean;
@@ -96,4 +98,33 @@ export class ContextFirewall {
       ...(textDecision.redactedText === undefined ? {} : { redactedText: textDecision.redactedText })
     };
   }
+}
+
+export async function createWorkspaceFirewall(root: string): Promise<ContextFirewall> {
+  const ignorePatterns = await loadWorkspaceIgnorePatterns(root);
+  return new ContextFirewall({
+    neverSendPaths: [...DEFAULT_NEVER_SEND_PATTERNS, ...ignorePatterns]
+  });
+}
+
+async function loadWorkspaceIgnorePatterns(root: string): Promise<string[]> {
+  const files = [".gitignore", ".buildrignore"];
+  const patterns: string[] = [];
+  for (const file of files) {
+    try {
+      const content = await readFile(join(root, file), "utf8");
+      patterns.push(...parseIgnorePatterns(content));
+    } catch {
+      // Missing ignore files are normal.
+    }
+  }
+  return patterns;
+}
+
+function parseIgnorePatterns(content: string): string[] {
+  return content
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .map((line) => line.replace(/^\//u, "").replace(/\*+$/u, ""));
 }

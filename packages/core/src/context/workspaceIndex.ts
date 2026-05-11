@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
-import { ContextFirewall } from "../security/contextFirewall.js";
+import { createWorkspaceFirewall } from "../security/contextFirewall.js";
 
 export interface IndexedFile {
   path: string;
@@ -20,7 +20,7 @@ const SKIP_DIRS = new Set([".git", "node_modules", "dist", "out", "coverage", ".
 const TEXT_EXTENSIONS = new Set([".cjs", ".css", ".html", ".js", ".json", ".jsx", ".md", ".mjs", ".ts", ".tsx", ".txt", ".yaml", ".yml"]);
 
 export async function buildWorkspaceIndex(root: string): Promise<WorkspaceIndex> {
-  const firewall = new ContextFirewall();
+  const firewall = await createWorkspaceFirewall(root);
   const files: IndexedFile[] = [];
 
   await walk(root, async (path) => {

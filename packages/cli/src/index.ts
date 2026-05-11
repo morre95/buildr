@@ -23,13 +23,19 @@ const [, , command, ...args] = process.argv;
 
 try {
   if (command === "plan") {
-    const goal = args.join(" ");
-    const core = new BuildrCore();
-    const plan = core.createPlan(goal);
+    const options = parseCliOptions(args);
+    const core = createCliCore(options);
+    const plan = options.modelId === undefined
+      ? core.createPlan(options.positionals.join(" "))
+      : (await core.createPlanFromModel({
+        goal: options.positionals.join(" "),
+        modelId: options.modelId,
+        contextSummary: await createCliContextSummary(process.cwd(), options.positionals.join(" "))
+      })).plan;
     process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
   } else if (command === "run") {
-    const goal = args.join(" ");
-    const report = await runReadOnlyPlan(goal);
+    const options = parseCliOptions(args);
+    const report = await runReadOnlyPlan(options.positionals.join(" "), options);
     process.stdout.write(`${renderStepReportToString(report)}\n`);
   } else if (command === "context") {
     const query = args.join(" ");
@@ -66,9 +72,23 @@ try {
   process.exitCode = 1;
 }
 
-async function runReadOnlyPlan(goal: string): Promise<{ title: string; summary: string; events: ExecutionEvent[]; warnings: string[] }> {
-  const core = new BuildrCore();
-  const plan = core.createPlan(goal);
+interface CliOptions {
+  positionals: string[];
+  provider: "ollama" | "lmstudio-openai" | "lmstudio-native" | "openai-compatible";
+  baseUrl?: string;
+  modelId?: string;
+}
+
+async function runReadOnlyPlan(goal: string, options: CliOptions): Promise<{ title: string; summary: string; events: ExecutionEvent[]; warnings: string[] }> {
+  const core = createCliCore(options);
+  const planResult = options.modelId === undefined
+    ? { plan: core.createPlan(goal), warnings: [] }
+    : await core.createPlanFromModel({
+      goal,
+      modelId: options.modelId,
+      contextSummary: await createCliContextSummary(process.cwd(), goal)
+    });
+  const plan = planResult.plan;
   const index = await buildWorkspaceIndex(process.cwd());
   const events: ExecutionEvent[] = [
     {
@@ -76,7 +96,7 @@ async function runReadOnlyPlan(goal: string): Promise<{ title: string; summary: 
       title: "Create plan",
       status: "completed",
       summary: `${plan.steps.length} step(s) planned for: ${plan.goal}`,
-      warnings: []
+      warnings: planResult.warnings
     },
     {
       id: "context:index",
@@ -95,6 +115,55 @@ async function runReadOnlyPlan(goal: string): Promise<{ title: string; summary: 
     events,
     warnings: gate.ruleEvaluations.map((evaluation) => evaluation.message)
   };
+}
+
+async function createCliContextSummary(root: string, goal: string): Promise<string> {
+  const index = await buildWorkspaceIndex(root);
+  return compressRankedContext(rankWorkspaceContext(index, goal, 8), 3000).text;
+}
+
+function createCliCore(options: CliOptions): BuildrCore {
+  return new BuildrCore({
+    model: BuildrCore.createModelAdapter({
+      provider: options.provider,
+      ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl })
+    })
+  });
+}
+
+function parseCliOptions(args: string[]): CliOptions {
+  const positionals: string[] = [];
+  let provider: CliOptions["provider"] = "ollama";
+  let baseUrl: string | undefined;
+  let modelId: string | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const next = args[index + 1];
+    if (arg === "--provider" && isCliProvider(next)) {
+      provider = next;
+      index += 1;
+    } else if (arg === "--base-url" && next !== undefined) {
+      baseUrl = next;
+      index += 1;
+    } else if (arg === "--model" && next !== undefined) {
+      modelId = next;
+      index += 1;
+    } else if (arg !== undefined) {
+      positionals.push(arg);
+    }
+  }
+
+  return {
+    positionals,
+    provider,
+    ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(modelId === undefined ? {} : { modelId })
+  };
+}
+
+function isCliProvider(value: string | undefined): value is CliOptions["provider"] {
+  return value === "ollama" || value === "lmstudio-openai" || value === "lmstudio-native" || value === "openai-compatible";
 }
 
 async function readCachedOrBuildIndex(root: string): Promise<WorkspaceIndex> {
@@ -122,8 +191,8 @@ function indexPath(root: string): string {
 function printUsage(): void {
   process.stderr.write([
     "Usage:",
-    "  buildr plan \"task description\"",
-    "  buildr run \"task description\"",
+    "  buildr plan [--model qwen2.5-coder] [--provider ollama] [--base-url http://127.0.0.1:11434] \"task description\"",
+    "  buildr run [--model qwen2.5-coder] \"task description\"",
     "  buildr context \"query\"",
     "  buildr index",
     "  buildr mcp list",

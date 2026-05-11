@@ -1,7 +1,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { applyTextPatch, createTextPatch, type TextPatch } from "../diff/textPatch.js";
-import { ContextFirewall } from "../security/contextFirewall.js";
+import { ContextFirewall, createWorkspaceFirewall } from "../security/contextFirewall.js";
 import type { ToolDefinition, ToolResult } from "../types.js";
 
 export const builtInTools: ToolDefinition[] = [
@@ -67,7 +67,7 @@ export async function readFileTool(path: string): Promise<ToolResult<{ content: 
 
 export async function searchCodebaseTool(root: string, query: string): Promise<ToolResult<{ matches: string[] }>> {
   const matches: string[] = [];
-  const firewall = new ContextFirewall();
+  const firewall = await createWorkspaceFirewall(root);
   await walkTextFiles(root, async (path) => {
     const pathDecision = firewall.inspectPath(path);
     if (!pathDecision.allowed) {

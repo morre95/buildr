@@ -5,6 +5,7 @@ const RULE_PACK_OPTIONS = ["agent-behavior", "verification", "git-workflow", "se
 export async function openBuildrSettings(): Promise<void> {
   const choice = await vscode.window.showQuickPick([
     "Model provider",
+    "Model id",
     "Ollama base URL",
     "LM Studio base URL",
     "Token budget",
@@ -32,6 +33,9 @@ export async function openBuildrSettings(): Promise<void> {
   switch (choice) {
     case "Model provider":
       await updateChoice("buildr.model", "provider", ["ollama", "lmstudio-openai", "lmstudio-native", "openai-compatible"], target);
+      break;
+    case "Model id":
+      await updateInput("buildr.model", "modelId", "Model id to send to the configured provider, such as qwen2.5-coder or the loaded LM Studio model id.", target);
       break;
     case "Ollama base URL":
       await updateInput("buildr.model", "ollamaBaseUrl", "Ollama endpoint reachable from this extension host.", target);

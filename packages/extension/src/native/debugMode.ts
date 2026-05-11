@@ -14,6 +14,8 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import * as vscode from "vscode";
 
+const MAX_DEBUG_FIX_ITERATIONS = 3;
+
 export async function runDebugFromInput(): Promise<void> {
   const source = await vscode.window.showQuickPick([
     {
@@ -52,7 +54,7 @@ export async function runDebugFromInput(): Promise<void> {
     "Propose Fix"
   );
   if (action === "Propose Fix") {
-    await proposeAndApplyDebugFix(top, observations);
+    await proposeAndApplyDebugFix(top, observations, 1);
   }
 }
 
@@ -118,7 +120,7 @@ function observationsFromDiagnostics() {
   );
 }
 
-async function proposeAndApplyDebugFix(hypothesis: DebugHypothesis, observations: DebugObservation[]): Promise<void> {
+async function proposeAndApplyDebugFix(hypothesis: DebugHypothesis, observations: DebugObservation[], iteration: number): Promise<void> {
   if (hypothesis.id === "log-too-short" || hypothesis.id === "inspect-context") {
     vscode.window.showWarningMessage("Buildr needs a concrete error and target file before it can propose a fix.");
     return;
@@ -170,7 +172,48 @@ async function proposeAndApplyDebugFix(hypothesis: DebugHypothesis, observations
   }
 
   await applyDebugPatch(document.uri, patch);
-  vscode.window.showInformationMessage(`Buildr applied debug fix to ${document.fileName}.`);
+  await inspectDiagnosticsAfterFix(iteration);
+}
+
+async function inspectDiagnosticsAfterFix(iteration: number): Promise<void> {
+  // Give language servers a short window to refresh Problems after the write.
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 750));
+
+  const remaining = observationsFromDiagnostics().filter((observation) => isWorkspaceObservation(observation));
+  if (remaining.length === 0) {
+    vscode.window.showInformationMessage("Buildr applied the debug fix. VS Code diagnostics report no remaining workspace problems.");
+    return;
+  }
+
+  const session = createDebugSession({ observations: remaining });
+  const next = session.hypotheses[0];
+  if (next === undefined) {
+    vscode.window.showWarningMessage(`Buildr applied the debug fix, but ${remaining.length} diagnostic(s) remain.`);
+    return;
+  }
+
+  if (iteration >= MAX_DEBUG_FIX_ITERATIONS) {
+    vscode.window.showWarningMessage(`Buildr applied ${iteration} debug fix pass(es). ${remaining.length} diagnostic(s) still remain; stopping at the safety limit.`);
+    return;
+  }
+
+  const action = await vscode.window.showWarningMessage(
+    `Buildr applied the fix, then found ${remaining.length} remaining diagnostic(s). Next hypothesis: ${next.title} (${next.confidence}).`,
+    "Propose Next Fix",
+    "Stop"
+  );
+  if (action === "Propose Next Fix") {
+    await proposeAndApplyDebugFix(next, remaining, iteration + 1);
+  }
+}
+
+function isWorkspaceObservation(observation: DebugObservation): boolean {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined || observation.file === undefined) {
+    return true;
+  }
+  const file = isAbsolute(observation.file) ? observation.file : resolve(root, observation.file);
+  return file === root || file.startsWith(`${root}/`);
 }
 
 function resolveDebugTarget(observations: DebugObservation[]): string | undefined {

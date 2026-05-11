@@ -40,12 +40,8 @@ export async function runDebugFromInput(): Promise<void> {
 
 async function observationsFromSource(source: string) {
   if (source === "Paste log text") {
-    const pasted = await vscode.window.showInputBox({
-      title: "Buildr: Paste Debug Log",
-      prompt: "Paste terminal output, test failure, stack trace, or app log.",
-      ignoreFocusOut: true
-    });
-    return observationsFromLog(pasted ?? "");
+    const pasted = await readPastedLogFromEditor();
+    return observationsFromLog(pasted);
   }
 
   if (source === "Read log file") {
@@ -61,6 +57,32 @@ async function observationsFromSource(source: string) {
   }
 
   return observationsFromDiagnostics();
+}
+
+async function readPastedLogFromEditor(): Promise<string> {
+  const document = await vscode.workspace.openTextDocument({
+    language: "log",
+    content: [
+      "Paste terminal output, test failure, stack trace, or app log here.",
+      "Delete these instruction lines before confirming.",
+      ""
+    ].join("\n")
+  });
+  await vscode.window.showTextDocument(document, { preview: false });
+
+  const action = await vscode.window.showInformationMessage(
+    "Paste the debug log into the opened editor, then choose Analyze.",
+    { modal: true },
+    "Analyze"
+  );
+  if (action !== "Analyze") {
+    return "";
+  }
+
+  return document.getText()
+    .replace(/^Paste terminal output, test failure, stack trace, or app log here\.\r?\n/u, "")
+    .replace(/^Delete these instruction lines before confirming\.\r?\n/u, "")
+    .trim();
 }
 
 function observationsFromDiagnostics() {

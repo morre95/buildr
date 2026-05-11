@@ -52,4 +52,16 @@ describe("Phase 3 MCP and Debug Mode", () => {
 
     expect(session.hypotheses[0]?.id).toBe("missing-module");
   });
+
+  it("recognizes short and package-manager debug logs", () => {
+    const short = createDebugSession({
+      observations: observationsFromLog("hello")
+    });
+    const packageManifest = createDebugSession({
+      observations: observationsFromLog("ERR_PNPM_NO_IMPORTER_MANIFEST_FOUND No package.json was found")
+    });
+
+    expect(short.hypotheses[0]?.id).toBe("log-too-short");
+    expect(packageManifest.hypotheses[0]?.id).toBe("missing-package-manifest");
+  });
 });

@@ -72,6 +72,76 @@ function createHypotheses(observations: DebugObservation[], mistakes: CommonMist
     });
   }
 
+  if (text.includes("syntaxerror") || text.includes("unexpected token")) {
+    hypotheses.push({
+      id: "syntax-error",
+      title: "Syntax error or invalid source format",
+      confidence: "high",
+      evidence: observations.map((observation) => observation.message).slice(0, 3),
+      suggestedAction: "Open the reported file and line, then fix the malformed token, bracket, import/export, or JSON syntax."
+    });
+  }
+
+  if (text.includes("referenceerror") || text.includes("is not defined")) {
+    hypotheses.push({
+      id: "undefined-symbol",
+      title: "Referenced symbol is not defined",
+      confidence: "high",
+      evidence: observations.map((observation) => observation.message).slice(0, 3),
+      suggestedAction: "Find the missing variable, function, import, or global and either define it or correct the name."
+    });
+  }
+
+  if (text.includes("enoent") || text.includes("no such file or directory")) {
+    hypotheses.push({
+      id: "missing-file",
+      title: "Missing file or incorrect path",
+      confidence: "high",
+      evidence: observations.map((observation) => observation.message).slice(0, 3),
+      suggestedAction: "Verify the referenced path, workspace root, generated files, and relative path assumptions."
+    });
+  }
+
+  if (text.includes("eaddrinuse") || text.includes("address already in use")) {
+    hypotheses.push({
+      id: "port-in-use",
+      title: "Port is already in use",
+      confidence: "high",
+      evidence: observations.map((observation) => observation.message).slice(0, 3),
+      suggestedAction: "Stop the process using the port or configure the app to use a different port."
+    });
+  }
+
+  if (text.includes("command not found") || text.includes("not recognized as an internal or external command")) {
+    hypotheses.push({
+      id: "missing-command",
+      title: "Required command is unavailable on PATH",
+      confidence: "high",
+      evidence: observations.map((observation) => observation.message).slice(0, 3),
+      suggestedAction: "Check that the tool is installed, available in PATH, and being run from the expected shell/environment."
+    });
+  }
+
+  if (text.includes("no package.json") || text.includes("no importer manifest") || text.includes("err_pnpm_no_importer_manifest_found")) {
+    hypotheses.push({
+      id: "missing-package-manifest",
+      title: "Package command was run outside a Node package",
+      confidence: "high",
+      evidence: observations.map((observation) => observation.message).slice(0, 3),
+      suggestedAction: "Run the command from a folder containing package.json, create the manifest, or skip package-manager verification for static files."
+    });
+  }
+
+  if (text.includes("assertionerror") || text.includes("expected") && text.includes("received") || text.includes("failed tests")) {
+    hypotheses.push({
+      id: "test-assertion-failure",
+      title: "Test assertion failed",
+      confidence: "medium",
+      evidence: observations.map((observation) => observation.message).slice(0, 3),
+      suggestedAction: "Inspect the failing assertion and compare the expected behavior with the implementation change."
+    });
+  }
+
   for (const mistake of mistakes) {
     hypotheses.push({
       id: `mistake:${mistake.id}`,
@@ -83,6 +153,17 @@ function createHypotheses(observations: DebugObservation[], mistakes: CommonMist
   }
 
   if (hypotheses.length === 0) {
+    if (text.trim().split(/\s+/u).filter((term) => term.length > 0).length < 4) {
+      hypotheses.push({
+        id: "log-too-short",
+        title: "Log text is too short to diagnose",
+        confidence: "low",
+        evidence: observations.map((observation) => observation.message).slice(0, 3),
+        suggestedAction: "Paste the full error message, stack trace, command output, or VS Code diagnostic text."
+      });
+      return hypotheses;
+    }
+
     hypotheses.push({
       id: "inspect-context",
       title: "Needs more context",

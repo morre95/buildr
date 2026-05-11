@@ -1,0 +1,13 @@
+---
+description: Buildr agent architecture and Phase 1A scope
+alwaysApply: true
+---
+
+# Buildr Architecture
+
+- Phase 1A scope is a runnable vertical slice: plan, approve, patch, verify, report.
+- `packages/core` owns provider adapters, plan schema, tools, permissions, diff safety, and verification.
+- `packages/extension` owns VS Code commands, Workspace Trust checks, webview UI, settings, and SecretStorage.
+- `packages/cli` reuses `packages/core`; do not duplicate orchestration logic.
+- All writes are diff-first and must detect stale file content before applying.
+- Terminal commands must show command, cwd, timeout, environment changes, and risk before execution.

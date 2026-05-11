@@ -1,0 +1,19 @@
+{
+  "policies": [
+    {
+      "tool": "run_terminal",
+      "pattern": "pnpm test",
+      "action": "ask"
+    },
+    {
+      "tool": "run_terminal",
+      "pattern": "pnpm build",
+      "action": "ask"
+    },
+    {
+      "tool": "run_terminal",
+      "pattern": "curl * | sh",
+      "action": "deny"
+    }
+  ]
+}

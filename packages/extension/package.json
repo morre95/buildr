@@ -1,0 +1,76 @@
+{
+  "name": "buildr-vscode",
+  "displayName": "Buildr",
+  "description": "Local-model-first agentic coding workflows for VS Code.",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "publisher": "buildr",
+  "categories": ["AI", "Other"],
+  "main": "./dist/extension.js",
+  "types": "./dist/extension.d.ts",
+  "extensionKind": ["workspace", "ui"],
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "activationEvents": [
+    "onCommand:buildr.plan",
+    "onCommand:buildr.runApprovedPlan",
+    "onCommand:buildr.configureModel",
+    "onCommand:buildr.stop"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Buildr runs in read-only Plan Mode until the workspace is trusted."
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "buildr.plan",
+        "title": "Buildr: Plan"
+      },
+      {
+        "command": "buildr.runApprovedPlan",
+        "title": "Buildr: Run Approved Plan"
+      },
+      {
+        "command": "buildr.configureModel",
+        "title": "Buildr: Configure Model"
+      },
+      {
+        "command": "buildr.stop",
+        "title": "Buildr: Stop"
+      }
+    ],
+    "configuration": {
+      "title": "Buildr",
+      "properties": {
+        "buildr.model.provider": {
+          "type": "string",
+          "default": "ollama",
+          "enum": ["ollama"],
+          "description": "Default model provider for the Phase 1A vertical slice."
+        },
+        "buildr.model.ollamaBaseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Ollama endpoint reachable from the active extension host."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@buildr/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.7.3"
+  }
+}

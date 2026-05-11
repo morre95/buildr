@@ -3,3 +3,17 @@
 *.swo
 *~
 ._*
+node_modules/
+.corepack/
+.pnpm-store/
+dist/
+out/
+coverage/
+*.tsbuildinfo
+.buildr/cache/
+.buildr/index/
+.buildr/runtime/
+.buildr/logs/
+.env*
+*.pem
+*.key

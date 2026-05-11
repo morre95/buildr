@@ -1,0 +1,14 @@
+---
+description: TypeScript and VS Code extension standards for Buildr
+globs: "**/*.{ts,tsx,json}"
+alwaysApply: false
+---
+
+# TypeScript Extension Standards
+
+- Use strict TypeScript and named exports.
+- Keep VS Code API imports inside `packages/extension`; shared logic belongs in `packages/core`.
+- Feature-detect optional VS Code APIs and provide command/webview fallbacks.
+- Respect Workspace Trust: side-effecting features must be disabled when untrusted.
+- Store provider credentials and MCP tokens in VS Code `SecretStorage`, never workspace config.
+- Do not use `any`; use `unknown` and narrow with explicit checks.

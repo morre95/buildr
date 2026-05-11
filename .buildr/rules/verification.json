@@ -1,0 +1,23 @@
+{
+  "id": "verification",
+  "description": "Verification and completion policy",
+  "alwaysApply": true,
+  "defaults": {
+    "allowUnverifiedCompletion": "ask",
+    "failOnWarnings": true,
+    "includeOutputEvidence": true
+  },
+  "levels": {
+    "diagnostics": {
+      "required": true
+    },
+    "lint": {
+      "required": true,
+      "preferredCommands": ["pnpm lint"]
+    },
+    "tests": {
+      "required": false,
+      "preferredCommands": ["pnpm test"]
+    }
+  }
+}

@@ -6,36 +6,40 @@ alwaysApply: true
 # Project Instructions
 
 ## Commands
-<!-- Add your actual build/test/lint commands here -->
-- Build: `npm run build`
-- Test: `npm test`
-- Lint: `npm run lint -- --fix`
-- Single test: `npm test -- --grep "test name"`
+- Install: `pnpm install`
+- Build: `pnpm build`
+- Test: `pnpm test`
+- Lint/typecheck: `pnpm lint`
+- Single test file: `pnpm vitest run path/to/file.test.ts`
+- If `pnpm` is not on PATH, use `corepack pnpm <command>`
 
 ## Code Style
-<!-- Only list conventions that differ from language defaults -->
 - Use ES modules (import/export), not CommonJS (require)
 - Prefer named exports over default exports
 - Use TypeScript strict mode
+- Keep shared runtime logic in `packages/core`; VS Code API usage stays in `packages/extension`
+- Store prompts as `.j2` templates under `packages/core/prompts/`
 
 ## Workflow
 - Run lint and tests before committing
 - Write descriptive commit messages in imperative mood
 - Create feature branches, never commit directly to main
+- Treat Phase 1A as the active implementation scope unless the user asks for a later phase
 
 ## Architecture
-<!-- Key decisions the agent can't infer from code alone -->
-- API routes live in `src/api/`, business logic in `src/services/`
-- Database access through repository pattern in `src/repositories/`
-- Shared types in `src/types/`
+- `packages/core`: model adapters, plan schema, tool contracts, permission policy, patch safety, verification helpers
+- `packages/extension`: VS Code activation, command contributions, Workspace Trust behavior, Step Panel UI
+- `packages/cli`: terminal entry point over the shared core
+- `.buildr/`: user-reviewable Buildr config and local project memory
+- Generated index/cache/runtime state should use VS Code workspace storage where possible
 
 ## Platform / Environment
-<!-- Fill in your setup so the agent doesn't suggest incompatible solutions -->
-- OS: (e.g., Linux x86_64, macOS ARM)
-- Runtime: (e.g., Python 3.12, Node 20)
-- Package manager: (e.g., uv, npm, pnpm)
+- Runtime: Node.js 20+
+- Package manager: pnpm workspaces
+- Target: VS Code desktop first, with remote/web capability checks
 
 ## Gotchas
-<!-- Non-obvious behaviors, environment quirks, common mistakes -->
-- The test database resets between runs — don't rely on seed data
-- Environment variables must be prefixed with `VITE_` for frontend access
+- Do not assume `localhost` points to the user's laptop; it points to the active extension host
+- Keep provider secrets in VS Code `SecretStorage`, not config files
+- Do not execute terminal commands or apply patches without routing through the permission model
+- Workspace Trust must keep side-effecting features disabled in untrusted workspaces

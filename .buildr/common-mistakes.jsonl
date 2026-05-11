@@ -1,0 +1,1 @@
+{"id":"mistake-001","pattern":"Treating local model localhost as always reachable","avoidanceRule":"Before provider calls, identify whether the extension host is local, remote, WSL, container, Codespaces, or web.","severity":"medium","createdAt":"2026-05-11"}

@@ -1,0 +1,33 @@
+{
+  "model": {
+    "defaultProvider": "ollama",
+    "defaultModel": "qwen2.5-coder",
+    "baseUrls": {
+      "ollama": "http://127.0.0.1:11434"
+    },
+    "credentialRefs": {}
+  },
+  "context": {
+    "maxTokens": 32000,
+    "respectGitignore": true,
+    "redactSecrets": true
+  },
+  "agent": {
+    "maxIterationsPerStep": 5,
+    "maxToolCallsPerTask": 50,
+    "requirePlanForWrites": true
+  },
+  "rules": {
+    "enabled": true,
+    "rulePacks": ["agent-behavior", "verification", "git-workflow"],
+    "failOnLinterWarnings": true,
+    "allowUnverifiedCompletion": "ask",
+    "commonMistakes": true,
+    "agentDocs": true
+  },
+  "telemetry": {
+    "enabled": false,
+    "includePrompts": false,
+    "includeFilePaths": false
+  }
+}

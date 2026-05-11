@@ -1,0 +1,13 @@
+---
+description: VS Code webview UI security and consistency
+globs: "packages/extension/src/webview/**/*.{ts,tsx,css}"
+alwaysApply: false
+---
+
+# Webview UI
+
+- Use strict CSP, nonces or static no-script rendering, and restricted `localResourceRoots`.
+- Validate every message crossing the extension-host/webview boundary.
+- Never render raw model output as trusted HTML.
+- Use VS Code theme tokens and avoid color-only status indicators.
+- Support keyboard navigation, focus management, screen-reader labels, and reduced motion.

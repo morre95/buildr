@@ -1,0 +1,21 @@
+{
+  "name": "buildr",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local-model-first VS Code agent for transparent coding workflows.",
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "lint": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

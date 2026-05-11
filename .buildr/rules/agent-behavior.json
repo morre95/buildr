@@ -1,0 +1,22 @@
+{
+  "id": "agent-behavior",
+  "description": "Core Buildr agent behavior",
+  "alwaysApply": true,
+  "rules": [
+    {
+      "id": "read-before-editing",
+      "severity": "error",
+      "text": "Read relevant code and understand existing patterns before editing."
+    },
+    {
+      "id": "evidence-over-claims",
+      "severity": "block_completion",
+      "text": "Do not claim something works unless verification was run or unverified completion was explicitly accepted."
+    },
+    {
+      "id": "task-fidelity",
+      "severity": "error",
+      "text": "Do exactly what was asked; avoid unrelated refactors or feature additions."
+    }
+  ]
+}

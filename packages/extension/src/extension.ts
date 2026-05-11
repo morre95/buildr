@@ -4,7 +4,9 @@ import {
   createFinalSummary,
   createTextPatch,
   eventFromPermissionDecision,
+  loadBuiltInRulePacks,
   requireTrustedWorkspace,
+  runCompletionGate,
   runVerificationCommand,
   searchCodebaseTool,
   type BuildrPlan,
@@ -13,6 +15,7 @@ import {
   type TextPatch
 } from "@buildr/core";
 import * as vscode from "vscode";
+import { BuildrSecretStore } from "./credentials.js";
 import { type ApprovalMessage, StepPanel } from "./webview/stepPanel.js";
 
 let activeAbortController: AbortController | undefined;
@@ -29,6 +32,7 @@ interface TerminalApprovalPayload {
 export function activate(context: vscode.ExtensionContext): void {
   const core = new BuildrCore();
   const stepPanel = new StepPanel(context.extensionUri);
+  const secretStore = new BuildrSecretStore(context.secrets);
 
   stepPanel.onApproval((message) => {
     void handleApproval(message, stepPanel);
@@ -82,10 +86,29 @@ export function activate(context: vscode.ExtensionContext): void {
       if (nextUrl) {
         await config.update("ollamaBaseUrl", nextUrl, vscode.ConfigurationTarget.Workspace);
       }
+
+      const secret = await vscode.window.showInputBox({
+        title: "Buildr: Optional Provider Secret",
+        prompt: "Optional API key for cloud/OpenAI-compatible providers. Leave blank to keep existing secret.",
+        password: true,
+        ignoreFocusOut: true
+      });
+      if (secret !== undefined && secret.length > 0) {
+        await secretStore.storeProviderSecret("openaiCompatible", secret);
+        vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
+      }
     }),
     vscode.commands.registerCommand("buildr.stop", () => {
       activeAbortController?.abort();
       activeAbortController = undefined;
+      events.push({
+        id: `cancelled:${Date.now()}`,
+        title: "Stop requested",
+        status: "blocked",
+        summary: "Buildr cancelled the active operation and will not continue queued work.",
+        warnings: []
+      });
+      renderCurrentState(stepPanel, createFinalReportSummary());
       vscode.window.showInformationMessage("Buildr stopped the active operation.");
     })
   );
@@ -139,7 +162,7 @@ async function runPhase1A(stepPanel: StepPanel): Promise<void> {
     summary: "No active text selection or verification command was provided, so Buildr completed the read-only inspection.",
     warnings: []
   });
-  renderCurrentState(stepPanel, createFinalSummary(events));
+  renderCurrentState(stepPanel, createFinalReportSummary());
 }
 
 async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): Promise<void> {
@@ -152,7 +175,7 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
 
   if (message.decision === "deny") {
     events.push(eventFromPermissionDecision(approval, "deny"));
-    renderCurrentState(stepPanel, createFinalSummary(events));
+    renderCurrentState(stepPanel, createFinalReportSummary());
     return;
   }
 
@@ -207,7 +230,7 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
     });
   }
 
-  renderCurrentState(stepPanel, createFinalSummary(events));
+  renderCurrentState(stepPanel, createFinalReportSummary());
 }
 
 function readDiagnosticsEvent(): ExecutionEvent {
@@ -315,4 +338,17 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
     ...(finalSummary === undefined ? {} : { finalSummary })
   };
   stepPanel.showState(state);
+}
+
+function createFinalReportSummary(): string {
+  if (currentPlan === undefined) {
+    return createFinalSummary(events);
+  }
+
+  const gate = runCompletionGate({
+    events,
+    rulePacks: loadBuiltInRulePacks(currentPlan.rulePacks),
+    ...(queuedVerificationCommand === undefined ? { skippedVerificationReason: "No verification command was provided." } : {})
+  });
+  return `${createFinalSummary(events)} ${gate.summary}`;
 }

@@ -62,7 +62,7 @@ function renderState(state: StepPanelState): string {
     .map((step) => `<li><strong>${escapeHtml(step.title)}</strong> <span>(${escapeHtml(step.kind)})</span></li>`)
     .join("");
   const events = state.events
-    .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span></li>`)
+    .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
     .join("");
   const pending = state.pendingApproval === undefined ? "" : renderPendingApproval(state.pendingApproval);
   const finalSummary = state.finalSummary === undefined ? "" : `<h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p>`;
@@ -112,6 +112,24 @@ function renderPendingApproval(approval: PendingApproval): string {
     <button type="button" data-approval="approve" data-approval-id="${escapeHtml(approval.id)}">Approve Once</button>
     <button type="button" data-approval="deny" data-approval-id="${escapeHtml(approval.id)}">Deny</button>
   </section>`;
+}
+
+function renderEvidence(event: ExecutionEvent): string {
+  if (event.evidence === undefined && event.warnings.length === 0) {
+    return "";
+  }
+
+  const evidence = event.evidence;
+  const rows = [
+    evidence?.command === undefined ? "" : `Command: ${evidence.command}`,
+    evidence?.exitCode === undefined ? "" : `Exit code: ${evidence.exitCode}`,
+    evidence?.diagnosticsSummary === undefined ? "" : `Diagnostics: ${evidence.diagnosticsSummary}`,
+    evidence?.skippedReason === undefined ? "" : `Skipped: ${evidence.skippedReason}`,
+    evidence?.outputExcerpt === undefined ? "" : `Output:\n${evidence.outputExcerpt}`,
+    ...event.warnings.map((warning) => `Warning: ${warning}`)
+  ].filter((row) => row.length > 0);
+
+  return `<pre>${escapeHtml(rows.join("\n\n"))}</pre>`;
 }
 
 function parseApprovalMessage(message: unknown): ApprovalMessage | undefined {

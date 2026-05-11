@@ -1,6 +1,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { applyTextPatch, createTextPatch, type TextPatch } from "../diff/textPatch.js";
+import { ContextFirewall } from "../security/contextFirewall.js";
 import type { ToolDefinition, ToolResult } from "../types.js";
 
 export const builtInTools: ToolDefinition[] = [
@@ -44,18 +45,34 @@ export const builtInTools: ToolDefinition[] = [
 
 export async function readFileTool(path: string): Promise<ToolResult<{ content: string }>> {
   const content = await readFile(path, "utf8");
+  const firewall = new ContextFirewall();
+  const decision = firewall.inspectFileContext(path, content);
+  if (!decision.allowed) {
+    return {
+      ok: false,
+      summary: `Blocked reading ${path}.`,
+      warnings: decision.warnings,
+      provenance: [{ kind: "file", source: path }]
+    };
+  }
+
   return {
     ok: true,
     summary: `Read ${path}.`,
-    data: { content },
-    warnings: [],
+    data: { content: decision.redactedText ?? content },
+    warnings: decision.warnings,
     provenance: [{ kind: "file", source: path }]
   };
 }
 
 export async function searchCodebaseTool(root: string, query: string): Promise<ToolResult<{ matches: string[] }>> {
   const matches: string[] = [];
+  const firewall = new ContextFirewall();
   await walkTextFiles(root, async (path) => {
+    const pathDecision = firewall.inspectPath(path);
+    if (!pathDecision.allowed) {
+      return;
+    }
     const content = await readFile(path, "utf8");
     if (content.includes(query)) {
       matches.push(relative(root, path));

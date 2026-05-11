@@ -16,5 +16,6 @@ coverage/
 .buildr/runtime/
 .buildr/logs/
 .env*
+packages/extension/*.vsix
 *.pem
 *.key

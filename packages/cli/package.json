@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@buildr/core": "workspace:*",
+    "@huggingface/transformers": "^4.2.0",
     "ink": "^7.0.2",
     "react": "^19.2.6"
   }

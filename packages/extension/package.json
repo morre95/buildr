@@ -148,8 +148,7 @@
     "build": "tsc -b && node ./scripts/bundle-extension.mjs",
     "lint": "tsc -b --pretty false",
     "vscode:prepublish": "pnpm run build",
-    "package": "XDG_CACHE_HOME=../../.pnpm-cache pnpm dlx @vscode/vsce package --no-dependencies --allow-missing-repository --skip-license",
-    "diagnose-vsce": "node ./scripts/debug-vsce-hypotheses.mjs"
+    "package": "XDG_CACHE_HOME=../../.pnpm-cache pnpm dlx @vscode/vsce package --no-dependencies --allow-missing-repository --skip-license"
   },
   "dependencies": {
     "@buildr/core": "workspace:*"

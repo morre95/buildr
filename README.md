@@ -31,13 +31,6 @@ Run ro create vscode extention file:
 pnpm --filter buildr-vscode package
 ```
 
-If `pnpm` is not on PATH, use Corepack:
-
-```bash
-corepack pnpm install
-corepack pnpm build
-```
-
 ## Repo Layout
 
 ```text

@@ -37,6 +37,7 @@ import {
   type BuildrChatMode,
   type ChatMessage,
   type FileSearchMessage,
+  type PlanHistoryEntry,
   type PlanStreamState,
   type PromptMessage,
   StepPanel
@@ -54,6 +55,8 @@ let messages: ChatMessage[] = [];
 let activePrompt = "";
 let lastPlanPrompt = "";
 let streamState: PlanStreamState | undefined;
+let planHistory: PlanHistoryEntry[] = [];
+let currentPlanWarnings: string[] = [];
 
 interface TerminalApprovalPayload {
   command: string;
@@ -414,6 +417,7 @@ function changeCurrentPlan(stepPanel: StepPanel): void {
 async function createPlanFromGoal(goal: string, fileMentions: string[], stepPanel: StepPanel): Promise<BuildrPlan | undefined> {
   isRunning = true;
   activeAbortController = new AbortController();
+  archiveCurrentPlan();
   activePrompt = goal;
   lastPlanPrompt = goal;
   streamState = {
@@ -452,6 +456,7 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
     }
     stepPanel.postStreamComplete(streamState?.status ?? "Planning finished.");
     currentPlan = result.plan;
+    currentPlanWarnings = result.warnings;
     events = [];
     queuedWriteTargets = [];
     pendingApproval = undefined;
@@ -642,6 +647,23 @@ function stopActiveOperation(stepPanel: StepPanel): void {
   });
   renderCurrentState(stepPanel, currentPlan === undefined ? undefined : createFinalReportSummary());
   vscode.window.showInformationMessage("Buildr stopped the active operation.");
+}
+
+function archiveCurrentPlan(): void {
+  if (currentPlan === undefined) {
+    return;
+  }
+
+  planHistory.push({
+    id: `plan:${Date.now()}:${planHistory.length}`,
+    prompt: lastPlanPrompt || currentPlan.goal,
+    plan: currentPlan,
+    ...(streamState === undefined ? {} : { stream: { ...streamState } }),
+    createdAt: new Date().toLocaleString(),
+    warnings: currentPlanWarnings
+  });
+  currentPlan = undefined;
+  currentPlanWarnings = [];
 }
 
 export function deactivate(): void {
@@ -1071,6 +1093,7 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
     running: isRunning,
     messages,
     activePrompt,
+    planHistory,
     ...(streamState === undefined ? {} : { stream: streamState }),
     ...(currentPlan === undefined ? {} : { plan: currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),

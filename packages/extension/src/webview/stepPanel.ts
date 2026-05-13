@@ -30,8 +30,18 @@ export interface PlanStreamState {
   raw: string;
 }
 
+export interface PlanHistoryEntry {
+  id: string;
+  prompt: string;
+  plan: BuildrPlan;
+  stream?: PlanStreamState;
+  createdAt: string;
+  warnings: string[];
+}
+
 export interface StepPanelState {
   plan?: BuildrPlan;
+  planHistory: PlanHistoryEntry[];
   events: ExecutionEvent[];
   pendingApproval?: PendingApproval;
   finalSummary?: string;
@@ -187,11 +197,6 @@ export class StepPanel {
 
 function renderState(state: StepPanelState): string {
   const nonce = createNonce();
-  const steps = state.plan === undefined
-    ? ""
-    : state.plan.steps
-      .map((step) => `<li><strong>${escapeHtml(step.title)}</strong> <span>(${escapeHtml(step.kind)})</span><br><small>depends on: ${escapeHtml(step.dependsOn.join(", ") || "none")} · targets: ${escapeHtml(step.targets.join(", "))}</small></li>`)
-      .join("");
   const events = state.events
     .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
     .join("");
@@ -202,9 +207,7 @@ function renderState(state: StepPanelState): string {
   const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
   const stream = renderStream(state.stream);
   const canRunPlan = state.plan !== undefined && !state.running && state.pendingApproval === undefined;
-  const plan = state.plan === undefined
-    ? `<section class="empty"><h2>No active plan</h2><p>Describe a task below to start.</p></section>`
-    : `<section><div class="section-heading"><h2>Plan</h2><div class="actions"><button type="button" id="run-plan" ${canRunPlan ? "" : "disabled"}>Run Plan</button><button type="button" class="secondary" id="change-plan" ${state.running ? "disabled" : ""}>Change Plan</button></div></div><p>${escapeHtml(state.plan.goal)}</p><ol>${steps}</ol></section>`;
+  const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
 
   return `<!doctype html>
 <html lang="en">
@@ -267,6 +270,16 @@ function renderState(state: StepPanelState): string {
       section, .message {
         border-bottom: 1px solid var(--vscode-panel-border);
         padding: 12px 0;
+      }
+
+      details.plan-history {
+        border-bottom: 1px solid var(--vscode-panel-border);
+        padding: 10px 0;
+      }
+
+      details.plan-history summary {
+        cursor: pointer;
+        color: var(--vscode-foreground);
       }
 
       .message:first-child {
@@ -604,6 +617,49 @@ function renderState(state: StepPanelState): string {
 
 function renderModeOption(value: BuildrChatMode, label: string, selected: BuildrChatMode): string {
   return `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`;
+}
+
+function renderPlans(history: PlanHistoryEntry[], activePlan: BuildrPlan | undefined, canRunPlan: boolean, running: boolean): string {
+  const historical = history.map((entry, index) => renderPlanHistory(entry, index + 1)).join("");
+  const active = activePlan === undefined
+    ? `<section class="empty"><h2>No active plan</h2><p>Describe a task below to start.</p></section>`
+    : renderActivePlan(activePlan, history.length + 1, canRunPlan, running);
+  return `${historical}${active}`;
+}
+
+function renderPlanHistory(entry: PlanHistoryEntry, number: number): string {
+  const warnings = entry.warnings.length === 0
+    ? ""
+    : `<p><small>Warnings: ${escapeHtml(entry.warnings.join("; "))}</small></p>`;
+  return `<details class="plan-history">
+    <summary>Plan ${number}: ${escapeHtml(entry.plan.goal)}</summary>
+    <p><small>${escapeHtml(entry.createdAt)}</small></p>
+    <p>${escapeHtml(entry.prompt)}</p>
+    ${renderPlanSteps(entry.plan)}
+    ${warnings}
+    ${renderStream(entry.stream)}
+  </details>`;
+}
+
+function renderActivePlan(plan: BuildrPlan, number: number, canRunPlan: boolean, running: boolean): string {
+  return `<section>
+    <div class="section-heading">
+      <h2>Plan ${number}</h2>
+      <div class="actions">
+        <button type="button" id="run-plan" ${canRunPlan ? "" : "disabled"}>Run Plan</button>
+        <button type="button" class="secondary" id="change-plan" ${running ? "disabled" : ""}>Change Plan</button>
+      </div>
+    </div>
+    <p>${escapeHtml(plan.goal)}</p>
+    ${renderPlanSteps(plan)}
+  </section>`;
+}
+
+function renderPlanSteps(plan: BuildrPlan): string {
+  const steps = plan.steps
+    .map((step) => `<li><strong>${escapeHtml(step.title)}</strong> <span>(${escapeHtml(step.kind)})</span><br><small>depends on: ${escapeHtml(step.dependsOn.join(", ") || "none")} · targets: ${escapeHtml(step.targets.join(", "))}</small></li>`)
+    .join("");
+  return `<ol>${steps}</ol>`;
 }
 
 function renderStream(stream: PlanStreamState | undefined): string {

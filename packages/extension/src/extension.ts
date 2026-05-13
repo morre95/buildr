@@ -32,7 +32,14 @@ import { registerBuildrLanguageModelTools } from "./native/languageModelTools.js
 import { showMcpDoctor, showMcpList } from "./native/mcpCommands.js";
 import { openBuildrSettings } from "./native/settings.js";
 import { findTaskCommand } from "./native/tasks.js";
-import { type ApprovalMessage, StepPanel } from "./webview/stepPanel.js";
+import {
+  type ApprovalMessage,
+  type BuildrChatMode,
+  type ChatMessage,
+  type FileSearchMessage,
+  type PromptMessage,
+  StepPanel
+} from "./webview/stepPanel.js";
 
 let activeAbortController: AbortController | undefined;
 let currentPlan: BuildrPlan | undefined;
@@ -40,6 +47,9 @@ let events: ExecutionEvent[] = [];
 let pendingApproval: PendingApproval<TextPatch | TerminalApprovalPayload> | undefined;
 let queuedVerificationCommand: string | undefined;
 let queuedWriteTargets: PlanWriteTarget[] = [];
+let activeMode: BuildrChatMode = "plan";
+let isRunning = false;
+let messages: ChatMessage[] = [];
 
 interface TerminalApprovalPayload {
   command: string;
@@ -61,8 +71,20 @@ export function activate(context: vscode.ExtensionContext): void {
   stepPanel.onApproval((message) => {
     void handleApproval(message, stepPanel);
   });
+  stepPanel.onPrompt((message) => {
+    void handlePrompt(message, stepPanel);
+  });
+  stepPanel.onFileSearch((message) => {
+    void handleFileSearch(message, stepPanel);
+  });
+  stepPanel.onStop(() => {
+    stopActiveOperation(stepPanel);
+  });
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("buildr.openChat", () => {
+      renderCurrentState(stepPanel);
+    }),
     vscode.commands.registerCommand("buildr.plan", async () => {
       const goal = await vscode.window.showInputBox({
         title: "Buildr: Plan",
@@ -74,45 +96,8 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      activeAbortController = new AbortController();
-      const configuredCore = createConfiguredCore();
-      const modelId = getConfiguredModelId();
-      const contextSummary = await createWorkspaceContextSummary(goal);
-      const planOptions = {
-        goal,
-        modelId,
-        signal: activeAbortController.signal
-      };
-      const result = await configuredCore.createPlanFromModel(contextSummary === undefined ? planOptions : {
-        ...planOptions,
-        contextSummary
-      });
-      currentPlan = result.plan;
-      events = [];
-      queuedWriteTargets = [];
-      if (result.warnings.length > 0) {
-        events.push({
-          id: `plan:fallback:${Date.now()}`,
-          title: "Create model-backed plan",
-          status: "completed",
-          tool: "model_plan",
-          summary: `Using fallback plan for ${goal}.`,
-          warnings: result.warnings
-        });
-      } else {
-        events.push({
-          id: `plan:model:${Date.now()}`,
-          title: "Create model-backed plan",
-          status: "completed",
-          tool: "model_plan",
-          summary: `Created plan with ${configuredCore.model.displayName} model ${modelId}.`,
-          warnings: []
-        });
-      }
-      pendingApproval = undefined;
-      queuedVerificationCommand = undefined;
-      renderCurrentState(stepPanel);
-      vscode.window.showInformationMessage(`Buildr created a ${currentPlan.steps.length}-step plan (${result.source}).`);
+      activeMode = "plan";
+      await createPlanFromGoal(goal, [], stepPanel);
     }),
     vscode.commands.registerCommand("buildr.runApprovedPlan", async () => {
       try {
@@ -127,8 +112,16 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      activeMode = "agent";
+      isRunning = true;
+      renderCurrentState(stepPanel);
       activeAbortController = new AbortController();
-      await runPhase1A(stepPanel);
+      try {
+        await runPhase1A(stepPanel);
+      } finally {
+        isRunning = false;
+        renderCurrentState(stepPanel);
+      }
     }),
     vscode.commands.registerCommand("buildr.configureModel", async () => {
       const config = vscode.workspace.getConfiguration("buildr.model");
@@ -210,18 +203,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("buildr.doctor", showMcpDoctor),
     vscode.commands.registerCommand("buildr.debug", runDebugFromInput),
     vscode.commands.registerCommand("buildr.stop", () => {
-      activeAbortController?.abort();
-      activeAbortController = undefined;
-      queuedWriteTargets = [];
-      events.push({
-        id: `cancelled:${Date.now()}`,
-        title: "Stop requested",
-        status: "blocked",
-        summary: "Buildr cancelled the active operation and will not continue queued work.",
-        warnings: []
-      });
-      renderCurrentState(stepPanel, createFinalReportSummary());
-      vscode.window.showInformationMessage("Buildr stopped the active operation.");
+      stopActiveOperation(stepPanel);
     })
   );
 }
@@ -322,7 +304,155 @@ async function promptForModelId(providerLabel: string, currentModelId: string, p
   return value?.trim();
 }
 
-async function createWorkspaceContextSummary(goal: string): Promise<string | undefined> {
+async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promise<void> {
+  const prompt = message.prompt.trim();
+  if (prompt.length === 0 || isRunning) {
+    return;
+  }
+
+  activeMode = message.mode;
+  messages.push({
+    role: "user",
+    text: `${modeLabel(message.mode)}: ${prompt}`
+  });
+  renderCurrentState(stepPanel);
+
+  if (message.mode === "debug") {
+    messages.push({
+      role: "assistant",
+      text: "Opening Debug Mode input."
+    });
+    renderCurrentState(stepPanel);
+    await runDebugFromInput();
+    return;
+  }
+
+  const result = await createPlanFromGoal(prompt, message.fileMentions, stepPanel);
+  if (message.mode !== "agent" || result === undefined) {
+    return;
+  }
+
+  try {
+    requireTrustedWorkspace(vscode.workspace.isTrusted);
+  } catch (error) {
+    vscode.window.showWarningMessage(error instanceof Error ? error.message : "Buildr execution is blocked.");
+    messages.push({
+      role: "assistant",
+      text: error instanceof Error ? error.message : "Buildr execution is blocked."
+    });
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  isRunning = true;
+  renderCurrentState(stepPanel);
+  activeAbortController = new AbortController();
+  try {
+    await runPhase1A(stepPanel);
+  } finally {
+    isRunning = false;
+    renderCurrentState(stepPanel);
+  }
+}
+
+async function createPlanFromGoal(goal: string, fileMentions: string[], stepPanel: StepPanel): Promise<BuildrPlan | undefined> {
+  isRunning = true;
+  activeAbortController = new AbortController();
+  renderCurrentState(stepPanel);
+
+  try {
+    const resolvedMentions = resolveFileMentions(fileMentions);
+    const configuredCore = createConfiguredCore();
+    const modelId = getConfiguredModelId();
+    const contextSummary = await createWorkspaceContextSummary(goal, resolvedMentions);
+    const planOptions = {
+      goal: appendMentionHint(goal, resolvedMentions),
+      modelId,
+      signal: activeAbortController.signal
+    };
+    const result = await configuredCore.createPlanFromModel(contextSummary === undefined ? planOptions : {
+      ...planOptions,
+      contextSummary
+    });
+    currentPlan = result.plan;
+    events = [];
+    queuedWriteTargets = [];
+    pendingApproval = undefined;
+    queuedVerificationCommand = undefined;
+
+    if (result.warnings.length > 0) {
+      events.push({
+        id: `plan:fallback:${Date.now()}`,
+        title: "Create model-backed plan",
+        status: "completed",
+        tool: "model_plan",
+        summary: `Using fallback plan for ${goal}.`,
+        warnings: result.warnings
+      });
+    } else {
+      events.push({
+        id: `plan:model:${Date.now()}`,
+        title: "Create model-backed plan",
+        status: "completed",
+        tool: "model_plan",
+        summary: `Created plan with ${configuredCore.model.displayName} model ${modelId}.`,
+        warnings: []
+      });
+    }
+
+    messages.push({
+      role: "assistant",
+      text: `Created a ${currentPlan.steps.length}-step plan.`
+    });
+    renderCurrentState(stepPanel);
+    vscode.window.showInformationMessage(`Buildr created a ${currentPlan.steps.length}-step plan (${result.source}).`);
+    return currentPlan;
+  } catch (error) {
+    const summary = error instanceof Error ? error.message : "Buildr could not create a plan.";
+    events.push({
+      id: `plan:error:${Date.now()}`,
+      title: "Create model-backed plan",
+      status: "failed",
+      tool: "model_plan",
+      summary,
+      warnings: []
+    });
+    messages.push({
+      role: "assistant",
+      text: summary
+    });
+    renderCurrentState(stepPanel);
+    vscode.window.showErrorMessage(summary);
+    return undefined;
+  } finally {
+    isRunning = false;
+    activeAbortController = undefined;
+    renderCurrentState(stepPanel);
+  }
+}
+
+async function handleFileSearch(message: FileSearchMessage, stepPanel: StepPanel): Promise<void> {
+  const root = vscode.workspace.workspaceFolders?.[0];
+  if (root === undefined) {
+    stepPanel.postFileSearchResults([]);
+    return;
+  }
+
+  const query = normalizeWorkspacePath(message.query.trim());
+  const files = await vscode.workspace.findFiles(
+    new vscode.RelativePattern(root, "**/*"),
+    "{**/.git/**,**/node_modules/**,**/dist/**,**/out/**,**/coverage/**,**/.pnpm-store/**}",
+    300
+  );
+  const scored = files
+    .map((uri) => normalizeWorkspacePath(relative(root.uri.fsPath, uri.fsPath)))
+    .filter((path) => query.length === 0 || path.toLowerCase().includes(query.toLowerCase()))
+    .sort((left, right) => scoreFileMention(left, query) - scoreFileMention(right, query) || left.localeCompare(right))
+    .slice(0, 12);
+  stepPanel.postFileSearchResults(scored);
+}
+
+async function createWorkspaceContextSummary(goal: string, mentionedFiles: string[] = []): Promise<string | undefined> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (root === undefined) {
     return undefined;
@@ -330,11 +460,106 @@ async function createWorkspaceContextSummary(goal: string): Promise<string | und
   try {
     const index = await buildWorkspaceIndex(root);
     const ranked = rankWorkspaceContext(index, goal, 8);
+    const mentioned = mentionedFiles.length === 0
+      ? []
+      : index.files.filter((file) => mentionedFiles.includes(file.relativePath));
     const compressed = compressRankedContext(ranked, 3000);
-    return compressed.text;
+    const mentionSummary = mentioned.length === 0
+      ? ""
+      : [
+        "User-mentioned files:",
+        ...mentioned.map((file) => `- ${file.relativePath}: ${file.summary}`)
+      ].join("\n");
+    return [mentionSummary, compressed.text].filter((part) => part.trim().length > 0).join("\n\n");
   } catch (error) {
     return `Workspace context indexing failed: ${error instanceof Error ? error.message : String(error)}`;
   }
+}
+
+function resolveFileMentions(fileMentions: string[]): string[] {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const resolved: string[] = [];
+  for (const mention of fileMentions) {
+    const normalized = normalizeWorkspacePath(mention);
+    const absolute = resolve(root, normalized);
+    const relativePath = normalizeWorkspacePath(relative(root, absolute));
+    if (relativePath.length === 0 || relativePath.startsWith("../") || relativePath === ".." || seen.has(relativePath)) {
+      continue;
+    }
+    seen.add(relativePath);
+    resolved.push(relativePath);
+  }
+  return resolved;
+}
+
+function appendMentionHint(goal: string, mentionedFiles: string[]): string {
+  if (mentionedFiles.length === 0) {
+    return goal;
+  }
+  return [
+    goal,
+    "",
+    "User-mentioned files:",
+    ...mentionedFiles.map((file) => `@${file}`)
+  ].join("\n");
+}
+
+function normalizeWorkspacePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.?\//u, "");
+}
+
+function scoreFileMention(path: string, query: string): number {
+  if (query.length === 0) {
+    return path.split("/").length;
+  }
+  const lowerPath = path.toLowerCase();
+  const lowerQuery = query.toLowerCase();
+  if (lowerPath === lowerQuery) {
+    return 0;
+  }
+  if (lowerPath.endsWith(`/${lowerQuery}`) || lowerPath.startsWith(lowerQuery)) {
+    return 1;
+  }
+  if (lowerPath.includes(`/${lowerQuery}`)) {
+    return 2;
+  }
+  return 3;
+}
+
+function modeLabel(mode: BuildrChatMode): string {
+  switch (mode) {
+    case "agent":
+      return "Agent";
+    case "debug":
+      return "Debug";
+    case "plan":
+      return "Plan";
+  }
+}
+
+function stopActiveOperation(stepPanel: StepPanel): void {
+  activeAbortController?.abort();
+  activeAbortController = undefined;
+  isRunning = false;
+  queuedWriteTargets = [];
+  events.push({
+    id: `cancelled:${Date.now()}`,
+    title: "Stop requested",
+    status: "blocked",
+    summary: "Buildr cancelled the active operation and will not continue queued work.",
+    warnings: []
+  });
+  messages.push({
+    role: "system",
+    text: "Stop requested."
+  });
+  renderCurrentState(stepPanel, currentPlan === undefined ? undefined : createFinalReportSummary());
+  vscode.window.showInformationMessage("Buildr stopped the active operation.");
 }
 
 export function deactivate(): void {
@@ -758,13 +983,12 @@ function createTerminalApproval(command: string): PendingApproval<TerminalApprov
 }
 
 function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
-  if (currentPlan === undefined) {
-    return;
-  }
-
   const state = {
-    plan: currentPlan,
     events,
+    mode: activeMode,
+    running: isRunning,
+    messages,
+    ...(currentPlan === undefined ? {} : { plan: currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
     ...(finalSummary === undefined ? {} : { finalSummary })
   };

@@ -22,6 +22,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "buildr.openChat",
+        "title": "Buildr: Open Chat"
+      },
+      {
         "command": "buildr.plan",
         "title": "Buildr: Plan"
       },

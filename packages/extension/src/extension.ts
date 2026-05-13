@@ -37,6 +37,7 @@ import {
   type BuildrChatMode,
   type ChatMessage,
   type FileSearchMessage,
+  type PlanStreamState,
   type PromptMessage,
   StepPanel
 } from "./webview/stepPanel.js";
@@ -50,6 +51,9 @@ let queuedWriteTargets: PlanWriteTarget[] = [];
 let activeMode: BuildrChatMode = "plan";
 let isRunning = false;
 let messages: ChatMessage[] = [];
+let activePrompt = "";
+let lastPlanPrompt = "";
+let streamState: PlanStreamState | undefined;
 
 interface TerminalApprovalPayload {
   command: string;
@@ -76,6 +80,12 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   stepPanel.onFileSearch((message) => {
     void handleFileSearch(message, stepPanel);
+  });
+  stepPanel.onRunPlan(() => {
+    void runCurrentPlanFromUi(stepPanel);
+  });
+  stepPanel.onChangePlan(() => {
+    changeCurrentPlan(stepPanel);
   });
   stepPanel.onStop(() => {
     stopActiveOperation(stepPanel);
@@ -311,6 +321,7 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
   }
 
   activeMode = message.mode;
+  activePrompt = prompt;
   messages.push({
     role: "user",
     text: `${modeLabel(message.mode)}: ${prompt}`
@@ -355,9 +366,61 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
   }
 }
 
+async function runCurrentPlanFromUi(stepPanel: StepPanel): Promise<void> {
+  if (isRunning || pendingApproval !== undefined) {
+    return;
+  }
+
+  try {
+    requireTrustedWorkspace(vscode.workspace.isTrusted);
+  } catch (error) {
+    vscode.window.showWarningMessage(error instanceof Error ? error.message : "Buildr execution is blocked.");
+    messages.push({
+      role: "assistant",
+      text: error instanceof Error ? error.message : "Buildr execution is blocked."
+    });
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  if (currentPlan === undefined) {
+    vscode.window.showWarningMessage("Create a Buildr plan before running approved steps.");
+    return;
+  }
+
+  activeMode = "agent";
+  isRunning = true;
+  activeAbortController = new AbortController();
+  renderCurrentState(stepPanel);
+  try {
+    await runPhase1A(stepPanel);
+  } finally {
+    isRunning = false;
+    renderCurrentState(stepPanel);
+  }
+}
+
+function changeCurrentPlan(stepPanel: StepPanel): void {
+  if (isRunning) {
+    return;
+  }
+  activeMode = "plan";
+  activePrompt = lastPlanPrompt || activePrompt;
+  streamState = undefined;
+  renderCurrentState(stepPanel);
+  stepPanel.postEditPrompt(activePrompt);
+}
+
 async function createPlanFromGoal(goal: string, fileMentions: string[], stepPanel: StepPanel): Promise<BuildrPlan | undefined> {
   isRunning = true;
   activeAbortController = new AbortController();
+  activePrompt = goal;
+  lastPlanPrompt = goal;
+  streamState = {
+    active: true,
+    status: "Indexing workspace context.",
+    raw: ""
+  };
   renderCurrentState(stepPanel);
 
   try {
@@ -365,15 +428,29 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
     const configuredCore = createConfiguredCore();
     const modelId = getConfiguredModelId();
     const contextSummary = await createWorkspaceContextSummary(goal, resolvedMentions);
+    streamState.status = "Asking model for a plan.";
+    renderCurrentState(stepPanel);
+    stepPanel.postStreamStart(streamState.status);
     const planOptions = {
       goal: appendMentionHint(goal, resolvedMentions),
       modelId,
-      signal: activeAbortController.signal
+      signal: activeAbortController.signal,
+      onDelta: (content: string) => {
+        if (streamState !== undefined) {
+          streamState.raw += content;
+        }
+        stepPanel.postStreamDelta(content);
+      }
     };
     const result = await configuredCore.createPlanFromModel(contextSummary === undefined ? planOptions : {
       ...planOptions,
       contextSummary
     });
+    if (streamState !== undefined) {
+      streamState.active = false;
+      streamState.status = result.source === "fallback" ? "Model plan failed; fallback plan is shown." : "Validated model plan.";
+    }
+    stepPanel.postStreamComplete(streamState?.status ?? "Planning finished.");
     currentPlan = result.plan;
     events = [];
     queuedWriteTargets = [];
@@ -409,6 +486,11 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
     return currentPlan;
   } catch (error) {
     const summary = error instanceof Error ? error.message : "Buildr could not create a plan.";
+    if (streamState !== undefined) {
+      streamState.active = false;
+      streamState.status = summary;
+    }
+    stepPanel.postStreamError(summary);
     events.push({
       id: `plan:error:${Date.now()}`,
       title: "Create model-backed plan",
@@ -988,6 +1070,8 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
     mode: activeMode,
     running: isRunning,
     messages,
+    activePrompt,
+    ...(streamState === undefined ? {} : { stream: streamState }),
     ...(currentPlan === undefined ? {} : { plan: currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
     ...(finalSummary === undefined ? {} : { finalSummary })

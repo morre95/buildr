@@ -6,7 +6,7 @@ class MockModelAdapter implements ModelAdapter {
   readonly displayName = "Mock";
   readonly provider = "ollama";
 
-  constructor(private readonly response: string, private readonly shouldThrow = false) {}
+  constructor(private readonly response: string | string[], private readonly shouldThrow = false) {}
 
   async getCapabilities(): Promise<ModelCapabilities> {
     return {
@@ -25,7 +25,9 @@ class MockModelAdapter implements ModelAdapter {
     if (this.shouldThrow) {
       throw new Error("offline");
     }
-    yield { type: "text", content: this.response };
+    for (const content of Array.isArray(this.response) ? this.response : [this.response]) {
+      yield { type: "text", content };
+    }
     yield { type: "done" };
   }
 
@@ -77,6 +79,26 @@ describe("model-backed Buildr planning", () => {
     expect(result.source).toBe("fallback");
     expect(result.plan.goal).toBe("Add tests");
     expect(result.warnings[0]).toContain("offline");
+  });
+
+  it("reports streamed model deltas while creating a plan", async () => {
+    const chunks = [
+      "{\"goal\":\"Add tests\",",
+      "\"acceptanceCriteria\":[\"Tests cover the new path\"],\"scopeBoundaries\":[\"Only edit tests\"],\"rulePacks\":[\"verification\"],\"verification\":{\"required\":true,\"levels\":[\"tests\"],\"commands\":[\"pnpm test\"],\"allowUnverifiedCompletion\":\"ask\",\"includeOutputEvidence\":true},\"steps\":[{\"id\":\"inspect\",\"title\":\"Inspect tests\",\"kind\":\"read\",\"tools\":[\"search_codebase\"],\"targets\":[\"packages/**\"],\"dependsOn\":[],\"risk\":\"low\"}]}"
+    ];
+    const deltas: string[] = [];
+    const core = new BuildrCore({
+      model: new MockModelAdapter(chunks)
+    });
+
+    const result = await core.createPlanFromModel({
+      goal: "Add tests",
+      modelId: "mock",
+      onDelta: (content) => deltas.push(content)
+    });
+
+    expect(result.source).toBe("model");
+    expect(deltas).toEqual(chunks);
   });
 
   it("parses model file rewrites", async () => {

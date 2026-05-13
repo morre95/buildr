@@ -47,6 +47,7 @@ export class BuildrCore {
     modelId: string;
     contextSummary?: string;
     signal?: AbortSignal;
+    onDelta?: (content: string) => void;
   }): Promise<ModelPlanResult> {
     const fallback = this.createPlan(options.goal);
     let rawResponse = "";
@@ -59,6 +60,7 @@ export class BuildrCore {
       }, options.signal === undefined ? {} : { signal: options.signal })) {
         if (delta.type === "text" && delta.content !== undefined) {
           rawResponse += delta.content;
+          options.onDelta?.(delta.content);
         }
       }
 

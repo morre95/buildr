@@ -24,6 +24,12 @@ export interface ChatMessage {
   text: string;
 }
 
+export interface PlanStreamState {
+  active: boolean;
+  status: string;
+  raw: string;
+}
+
 export interface StepPanelState {
   plan?: BuildrPlan;
   events: ExecutionEvent[];
@@ -32,6 +38,8 @@ export interface StepPanelState {
   mode: BuildrChatMode;
   running: boolean;
   messages: ChatMessage[];
+  activePrompt?: string;
+  stream?: PlanStreamState;
 }
 
 export class StepPanel {
@@ -39,6 +47,8 @@ export class StepPanel {
   private approvalHandler: ((message: ApprovalMessage) => void) | undefined;
   private promptHandler: ((message: PromptMessage) => void) | undefined;
   private fileSearchHandler: ((message: FileSearchMessage) => void) | undefined;
+  private runPlanHandler: (() => void) | undefined;
+  private changePlanHandler: (() => void) | undefined;
   private stopHandler: (() => void) | undefined;
   private messageDisposable: vscode.Disposable | undefined;
 
@@ -54,6 +64,14 @@ export class StepPanel {
 
   onFileSearch(handler: (message: FileSearchMessage) => void): void {
     this.fileSearchHandler = handler;
+  }
+
+  onRunPlan(handler: () => void): void {
+    this.runPlanHandler = handler;
+  }
+
+  onChangePlan(handler: () => void): void {
+    this.changePlanHandler = handler;
   }
 
   onStop(handler: () => void): void {
@@ -73,6 +91,41 @@ export class StepPanel {
     void this.panel?.webview.postMessage({
       type: "fileSearchResults",
       results
+    });
+  }
+
+  postStreamStart(status: string): void {
+    void this.panel?.webview.postMessage({
+      type: "streamStart",
+      status
+    });
+  }
+
+  postStreamDelta(content: string): void {
+    void this.panel?.webview.postMessage({
+      type: "streamDelta",
+      content
+    });
+  }
+
+  postStreamComplete(status: string): void {
+    void this.panel?.webview.postMessage({
+      type: "streamComplete",
+      status
+    });
+  }
+
+  postStreamError(status: string): void {
+    void this.panel?.webview.postMessage({
+      type: "streamError",
+      status
+    });
+  }
+
+  postEditPrompt(prompt: string): void {
+    void this.panel?.webview.postMessage({
+      type: "editPrompt",
+      prompt
     });
   }
 
@@ -112,6 +165,16 @@ export class StepPanel {
 
       if (isMessageOfType(message, "stop")) {
         this.stopHandler?.();
+        return;
+      }
+
+      if (isMessageOfType(message, "runPlan")) {
+        this.runPlanHandler?.();
+        return;
+      }
+
+      if (isMessageOfType(message, "changePlan")) {
+        this.changePlanHandler?.();
       }
     });
     this.panel.onDidDispose(() => {
@@ -137,9 +200,11 @@ function renderState(state: StepPanelState): string {
     .join("");
   const pending = state.pendingApproval === undefined ? "" : renderPendingApproval(state.pendingApproval);
   const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
+  const stream = renderStream(state.stream);
+  const canRunPlan = state.plan !== undefined && !state.running && state.pendingApproval === undefined;
   const plan = state.plan === undefined
     ? `<section class="empty"><h2>No active plan</h2><p>Describe a task below to start.</p></section>`
-    : `<section><h2>Plan</h2><p>${escapeHtml(state.plan.goal)}</p><ol>${steps}</ol></section>`;
+    : `<section><div class="section-heading"><h2>Plan</h2><div class="actions"><button type="button" id="run-plan" ${canRunPlan ? "" : "disabled"}>Run Plan</button><button type="button" class="secondary" id="change-plan" ${state.running ? "disabled" : ""}>Change Plan</button></div></div><p>${escapeHtml(state.plan.goal)}</p><ol>${steps}</ol></section>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -249,6 +314,19 @@ function renderState(state: StepPanelState): string {
         margin-bottom: 8px;
       }
 
+      .section-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
       select, textarea, button {
         font: inherit;
       }
@@ -326,6 +404,14 @@ function renderState(state: StepPanelState): string {
       .suggestion:hover, .suggestion:focus {
         background: var(--vscode-quickInputList-focusBackground);
       }
+
+      .stream-status {
+        color: var(--vscode-descriptionForeground);
+      }
+
+      .stream-output {
+        margin-top: 8px;
+      }
     </style>
   </head>
   <body>
@@ -335,6 +421,7 @@ function renderState(state: StepPanelState): string {
       </header>
       <div class="content">
         ${messages}
+        ${stream}
         ${plan}
         <section><h2>Execution</h2><ol>${events}</ol></section>
         ${pending}
@@ -351,7 +438,7 @@ function renderState(state: StepPanelState): string {
           <button type="button" class="secondary" id="stop" ${state.running ? "" : "disabled"}>Stop</button>
         </div>
         <div class="input-wrap">
-          <textarea id="prompt" placeholder="Describe the task. Type @ to mention a file." ${state.running ? "disabled" : ""}></textarea>
+          <textarea id="prompt" placeholder="Describe the task. Type @ to mention a file." ${state.running ? "disabled" : ""}>${escapeHtml(state.activePrompt ?? "")}</textarea>
           <div class="suggestions" id="suggestions" hidden></div>
         </div>
       </form>
@@ -391,6 +478,14 @@ function renderState(state: StepPanelState): string {
         vscode.postMessage({ type: "stop" });
       });
 
+      document.getElementById("run-plan")?.addEventListener("click", () => {
+        vscode.postMessage({ type: "runPlan" });
+      });
+
+      document.getElementById("change-plan")?.addEventListener("click", () => {
+        vscode.postMessage({ type: "changePlan" });
+      });
+
       prompt.addEventListener("input", () => {
         activeMention = findActiveMention(prompt.value, prompt.selectionStart);
         if (activeMention === undefined) {
@@ -412,11 +507,51 @@ function renderState(state: StepPanelState): string {
       });
 
       window.addEventListener("message", (event) => {
-        if (event.data?.type !== "fileSearchResults") {
+        if (event.data?.type === "fileSearchResults") {
+          renderSuggestions(event.data.results ?? []);
           return;
         }
-        renderSuggestions(event.data.results ?? []);
+        if (event.data?.type === "streamStart") {
+          setStreamStatus(event.data.status ?? "Planning started.");
+          setStreamRaw("");
+          return;
+        }
+        if (event.data?.type === "streamDelta") {
+          appendStreamRaw(event.data.content ?? "");
+          return;
+        }
+        if (event.data?.type === "streamComplete" || event.data?.type === "streamError") {
+          setStreamStatus(event.data.status ?? "Planning finished.");
+          return;
+        }
+        if (event.data?.type === "editPrompt") {
+          prompt.disabled = false;
+          mode.value = "plan";
+          prompt.value = event.data.prompt ?? "";
+          prompt.focus();
+        }
       });
+
+      function setStreamStatus(status) {
+        const statusElement = document.getElementById("stream-status");
+        if (statusElement !== null) {
+          statusElement.textContent = status;
+        }
+      }
+
+      function setStreamRaw(raw) {
+        const rawElement = document.getElementById("stream-raw");
+        if (rawElement !== null) {
+          rawElement.textContent = raw;
+        }
+      }
+
+      function appendStreamRaw(content) {
+        const rawElement = document.getElementById("stream-raw");
+        if (rawElement !== null) {
+          rawElement.textContent += content;
+        }
+      }
 
       function renderSuggestions(results) {
         suggestions.replaceChildren();
@@ -469,6 +604,22 @@ function renderState(state: StepPanelState): string {
 
 function renderModeOption(value: BuildrChatMode, label: string, selected: BuildrChatMode): string {
   return `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`;
+}
+
+function renderStream(stream: PlanStreamState | undefined): string {
+  if (stream === undefined) {
+    return "";
+  }
+  const status = stream.status;
+  const raw = stream.raw;
+  return `<section aria-label="Planning stream">
+    <h2>Model Stream</h2>
+    <p class="stream-status" id="stream-status">${escapeHtml(status)}</p>
+    <details class="stream-output" ${stream?.active === true || raw.length > 0 ? "open" : ""}>
+      <summary>Raw output</summary>
+      <pre id="stream-raw">${escapeHtml(raw)}</pre>
+    </details>
+  </section>`;
 }
 
 function renderPendingApproval(approval: PendingApproval): string {

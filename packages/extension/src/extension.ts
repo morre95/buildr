@@ -635,15 +635,13 @@ async function createWorkspaceContextSummary(goal: string, mentionedFiles: strin
   try {
     const index = await buildWorkspaceIndex(root);
     const ranked = rankWorkspaceContext(index, goal, 8);
-    const mentioned = mentionedFiles.length === 0
-      ? []
-      : index.files.filter((file) => mentionedFiles.includes(file.relativePath));
+    const mentioned = await loadMentionedFileContext(root, mentionedFiles, index.files);
     const compressed = compressRankedContext(ranked, 3000);
     const mentionSummary = mentioned.length === 0
       ? ""
       : [
         "User-mentioned files:",
-        ...mentioned.map((file) => `- ${file.relativePath}: ${file.summary}`)
+        ...mentioned.map((file) => `- ${file.relativePath}:\n${file.content}`)
       ].join("\n");
     return {
       text: [mentionSummary, compressed.text].filter((part) => part.trim().length > 0).join("\n\n"),
@@ -661,6 +659,49 @@ async function createWorkspaceContextSummary(goal: string, mentionedFiles: strin
       warnings: [`Workspace context indexing failed: ${error instanceof Error ? error.message : String(error)}`]
     };
   }
+}
+
+async function loadMentionedFileContext(
+  root: string,
+  mentionedFiles: string[],
+  indexedFiles: Array<{ relativePath: string; summary: string }>
+): Promise<Array<{ relativePath: string; content: string }>> {
+  const indexed = new Map(indexedFiles.map((file) => [file.relativePath, file.summary]));
+  const loaded: Array<{ relativePath: string; content: string }> = [];
+
+  for (const relativePath of mentionedFiles) {
+    const absolute = resolve(root, relativePath);
+    if (!isWorkspaceRelativePath(root, absolute)) {
+      continue;
+    }
+
+    const content = await readTextFileIfExists(absolute);
+    if (content.length > 0) {
+      loaded.push({
+        relativePath,
+        content: summarizeMentionedFile(content)
+      });
+      continue;
+    }
+
+    const indexedSummary = indexed.get(relativePath);
+    if (indexedSummary !== undefined) {
+      loaded.push({
+        relativePath,
+        content: indexedSummary
+      });
+    }
+  }
+
+  return loaded;
+}
+
+function summarizeMentionedFile(content: string): string {
+  const maxChars = 4000;
+  if (content.length <= maxChars) {
+    return content;
+  }
+  return `${content.slice(0, maxChars)}\n...[${content.length - maxChars} chars omitted]`;
 }
 
 function createContextInspectionEvent(context: WorkspaceContextSummary, title: string): ExecutionEvent {
@@ -687,7 +728,7 @@ function resolveFileMentions(fileMentions: string[]): string[] {
   const seen = new Set<string>();
   const resolved: string[] = [];
   for (const mention of fileMentions) {
-    const normalized = normalizeWorkspacePath(mention);
+    const normalized = normalizeWorkspacePath(stripMentionPunctuation(mention));
     const absolute = resolve(root, normalized);
     const relativePath = normalizeWorkspacePath(relative(root, absolute));
     if (relativePath.length === 0 || relativePath.startsWith("../") || relativePath === ".." || seen.has(relativePath)) {
@@ -713,6 +754,15 @@ function appendMentionHint(goal: string, mentionedFiles: string[]): string {
 
 function normalizeWorkspacePath(path: string): string {
   return path.replaceAll("\\", "/").replace(/^\.?\//u, "");
+}
+
+function stripMentionPunctuation(mention: string): string {
+  return mention.replace(/[),.;:!?]+$/u, "");
+}
+
+function isWorkspaceRelativePath(root: string, absolutePath: string): boolean {
+  const relativePath = relative(root, absolutePath);
+  return relativePath.length > 0 && !relativePath.startsWith("..") && relativePath !== "..";
 }
 
 function scoreFileMention(path: string, query: string): number {

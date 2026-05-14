@@ -71,7 +71,7 @@ The CLI can run the same shared multi-agent session for model-backed runs and re
 
 ```bash
 pnpm --filter buildr-agent buildr run \
-  --model qwen2.5-coder \
+  --model qwen/qwen3-coder-30b \
   --hard-token-cap 32000 \
   --max-parallel-sub-agents 3 \
   "your task here"

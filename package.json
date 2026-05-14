@@ -4,7 +4,7 @@
   "private": true,
   "description": "Local-model-first VS Code agent for transparent coding workflows.",
   "type": "module",
-  "packageManager": "pnpm@9.15.4",
+  "packageManager": "pnpm@11.1.2",
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",

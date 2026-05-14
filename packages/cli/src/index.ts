@@ -142,7 +142,12 @@ async function runReadOnlyPlan(goal: string, options: CliOptions): Promise<{ tit
       });
     }
   }
-  const gate = runCompletionGate({ events, rulePacks: loadBuiltInRulePacks(plan.rulePacks) });
+  const gate = runCompletionGate({
+    events,
+    rulePacks: loadBuiltInRulePacks(plan.rulePacks),
+    skippedVerificationReason:
+      "CLI run is read-only: patches are not applied and verification commands or diagnostics are not executed"
+  });
   return {
     title: "Buildr Run",
     summary: gate.summary,

@@ -44,6 +44,18 @@ describe("Phase 1B hardening", () => {
     expect(gate.status).toBe("blocked");
   });
 
+  it("allows completion when verification is explicitly skipped with a rationale", () => {
+    const gate = runCompletionGate({
+      events: [],
+      rulePacks: loadBuiltInRulePacks(["verification"]),
+      skippedVerificationReason: "CLI read-only session"
+    });
+
+    expect(gate.status).toBe("complete");
+    expect(gate.summary).toContain("CLI read-only session");
+    expect(gate.summary).not.toContain("passed with verification evidence");
+  });
+
   it("keeps LM Studio native adapter as an explicit skeleton", async () => {
     const adapter = new LMStudioNativeAdapter();
     const iterator = adapter.chat({ model: "local", messages: [] });

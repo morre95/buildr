@@ -45,6 +45,15 @@ export function runCompletionGate(options: {
     };
   }
 
+  if (options.skippedVerificationReason !== undefined && !hasVerificationEvidence) {
+    return {
+      status: "complete",
+      summary: `Run finished without executable verification (${options.skippedVerificationReason}).`,
+      ruleEvaluations,
+      verificationEvents
+    };
+  }
+
   return {
     status: "complete",
     summary: "Completion gate passed with verification evidence.",

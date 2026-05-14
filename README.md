@@ -26,7 +26,7 @@ pnpm package:extension
 
 The extension VSIX is produced with `vsce package --no-dependencies` after an **esbuild** bundle of `dist/extension.js` into `dist/extension.bundled.js`, so packaging works with **pnpm** (avoids `npm list` + symlink issues with workspace deps and heavy optional trees such as `@huggingface/transformers`).
 
-Run ro create vscode extention file:
+Run to create vscode extention file:
 ```bash
 pnpm --filter buildr-vscode package
 ```

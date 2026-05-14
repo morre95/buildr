@@ -43,8 +43,12 @@ import {
   type PlanHistoryEntry,
   type PlanStreamState,
   type PromptMessage,
+  type SavedAgentSessionSummary,
   StepPanel
 } from "./webview/stepPanel.js";
+
+const AGENT_SESSIONS_KEY = "buildr.agentSessions.v1";
+const MAX_SAVED_AGENT_SESSIONS = 20;
 
 let activeAbortController: AbortController | undefined;
 let currentPlan: BuildrPlan | undefined;
@@ -63,6 +67,10 @@ let planHistory: PlanHistoryEntry[] = [];
 let currentPlanWarnings: string[] = [];
 let tokenBudgetState: TokenBudgetState | undefined;
 let currentPlanMentionedFiles: string[] = [];
+let finalSummaryState: string | undefined;
+let extensionContext: vscode.ExtensionContext | undefined;
+let activeSessionId = "";
+let savedAgentSessions: PersistedAgentSession[] = [];
 
 interface TerminalApprovalPayload {
   command: string;
@@ -82,7 +90,207 @@ interface WorkspaceContextSummary {
   warnings: string[];
 }
 
+interface PersistedAgentSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  state: PersistedAgentSessionState;
+}
+
+interface PersistedAgentSessionState {
+  currentPlan?: BuildrPlan;
+  events: ExecutionEvent[];
+  pendingApproval?: PendingApproval<TextPatch | TerminalApprovalPayload>;
+  queuedVerificationCommand?: string;
+  queuedWriteTargets: PlanWriteTarget[];
+  queuedPatchApprovals: Array<PendingApproval<TextPatch>>;
+  activeMode: BuildrChatMode;
+  messages: ChatMessage[];
+  activePrompt: string;
+  lastPlanPrompt: string;
+  streamState?: PlanStreamState;
+  planHistory: PlanHistoryEntry[];
+  currentPlanWarnings: string[];
+  tokenBudgetState?: TokenBudgetState;
+  currentPlanMentionedFiles: string[];
+  finalSummary?: string;
+}
+
+function loadSavedAgentSessions(context: vscode.ExtensionContext): PersistedAgentSession[] {
+  return (context.workspaceState.get<PersistedAgentSession[]>(AGENT_SESSIONS_KEY, []) ?? [])
+    .filter(isPersistedAgentSession)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, MAX_SAVED_AGENT_SESSIONS);
+}
+
+function createBlankAgentSession(): void {
+  activeSessionId = createAgentSessionId();
+  resetAgentState();
+}
+
+function createNewAgentSession(stepPanel: StepPanel): void {
+  if (isRunning) {
+    vscode.window.showWarningMessage("Stop the active Buildr operation before opening a different agent.");
+    return;
+  }
+  persistActiveAgentSession();
+  activeSessionId = createAgentSessionId();
+  resetAgentState();
+  persistActiveAgentSession();
+  renderCurrentState(stepPanel);
+}
+
+function openAgentSession(id: string, stepPanel: StepPanel): void {
+  if (isRunning) {
+    vscode.window.showWarningMessage("Stop the active Buildr operation before opening a saved agent.");
+    renderCurrentState(stepPanel);
+    return;
+  }
+  if (id === activeSessionId) {
+    return;
+  }
+  const session = savedAgentSessions.find((candidate) => candidate.id === id);
+  if (session === undefined) {
+    vscode.window.showWarningMessage("Buildr could not find that saved agent.");
+    renderCurrentState(stepPanel);
+    return;
+  }
+  persistActiveAgentSession();
+  restoreAgentSession(session);
+  persistActiveAgentSession();
+  renderCurrentState(stepPanel);
+}
+
+function persistActiveAgentSession(): void {
+  const context = extensionContext;
+  if (context === undefined || activeSessionId.length === 0) {
+    return;
+  }
+  const now = new Date().toISOString();
+  const existing = savedAgentSessions.find((session) => session.id === activeSessionId);
+  const session = {
+    id: activeSessionId,
+    title: getActiveSessionTitle(),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    state: snapshotAgentState()
+  };
+  savedAgentSessions = [
+    session,
+    ...savedAgentSessions.filter((candidate) => candidate.id !== activeSessionId)
+  ].slice(0, MAX_SAVED_AGENT_SESSIONS);
+  void context.workspaceState.update(AGENT_SESSIONS_KEY, savedAgentSessions);
+}
+
+function restoreAgentSession(session: PersistedAgentSession): void {
+  activeSessionId = session.id;
+  currentPlan = session.state.currentPlan;
+  events = [...session.state.events];
+  pendingApproval = session.state.pendingApproval;
+  queuedVerificationCommand = session.state.queuedVerificationCommand;
+  queuedWriteTargets = [...session.state.queuedWriteTargets];
+  queuedPatchApprovals = [...session.state.queuedPatchApprovals];
+  activeMode = session.state.activeMode;
+  isRunning = false;
+  messages = [...session.state.messages];
+  activePrompt = session.state.activePrompt;
+  lastPlanPrompt = session.state.lastPlanPrompt;
+  streamState = session.state.streamState === undefined ? undefined : { ...session.state.streamState, active: false };
+  planHistory = [...session.state.planHistory];
+  currentPlanWarnings = [...session.state.currentPlanWarnings];
+  tokenBudgetState = session.state.tokenBudgetState;
+  currentPlanMentionedFiles = [...session.state.currentPlanMentionedFiles];
+  finalSummaryState = session.state.finalSummary;
+  activeAbortController = undefined;
+}
+
+function resetAgentState(): void {
+  activeAbortController = undefined;
+  currentPlan = undefined;
+  events = [];
+  pendingApproval = undefined;
+  queuedVerificationCommand = undefined;
+  queuedWriteTargets = [];
+  queuedPatchApprovals = [];
+  activeMode = "plan";
+  isRunning = false;
+  messages = [];
+  activePrompt = "";
+  lastPlanPrompt = "";
+  streamState = undefined;
+  planHistory = [];
+  currentPlanWarnings = [];
+  tokenBudgetState = undefined;
+  currentPlanMentionedFiles = [];
+  finalSummaryState = undefined;
+}
+
+function snapshotAgentState(): PersistedAgentSessionState {
+  return {
+    events,
+    queuedWriteTargets,
+    queuedPatchApprovals,
+    activeMode,
+    messages,
+    activePrompt,
+    lastPlanPrompt,
+    planHistory,
+    currentPlanWarnings,
+    currentPlanMentionedFiles,
+    ...(currentPlan === undefined ? {} : { currentPlan }),
+    ...(pendingApproval === undefined ? {} : { pendingApproval }),
+    ...(queuedVerificationCommand === undefined ? {} : { queuedVerificationCommand }),
+    ...(streamState === undefined ? {} : { streamState: { ...streamState, active: false } }),
+    ...(tokenBudgetState === undefined ? {} : { tokenBudgetState }),
+    ...(finalSummaryState === undefined ? {} : { finalSummary: finalSummaryState })
+  };
+}
+
+function getActiveSessionTitle(): string {
+  const firstUserMessage = messages.find((message) => message.role === "user")?.text.replace(/^(Ask|Plan|Agent|Debug):\s*/u, "").trim();
+  const title = currentPlan?.goal ?? firstUserMessage ?? "New agent";
+  return title.length > 48 ? `${title.slice(0, 45)}...` : title;
+}
+
+function getSessionSummaries(): SavedAgentSessionSummary[] {
+  return savedAgentSessions.map((session) => ({
+    id: session.id,
+    title: session.title,
+    createdAt: formatSessionTimestamp(session.createdAt),
+    updatedAt: formatSessionTimestamp(session.updatedAt)
+  }));
+}
+
+function formatSessionTimestamp(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function createAgentSessionId(): string {
+  return `agent:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isPersistedAgentSession(value: unknown): value is PersistedAgentSession {
+  return typeof value === "object"
+    && value !== null
+    && typeof (value as { id?: unknown }).id === "string"
+    && typeof (value as { title?: unknown }).title === "string"
+    && typeof (value as { createdAt?: unknown }).createdAt === "string"
+    && typeof (value as { updatedAt?: unknown }).updatedAt === "string"
+    && typeof (value as { state?: unknown }).state === "object"
+    && (value as { state?: unknown }).state !== null;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  extensionContext = context;
+  savedAgentSessions = loadSavedAgentSessions(context);
+  if (savedAgentSessions.length > 0) {
+    restoreAgentSession(savedAgentSessions[0]!);
+  } else {
+    createBlankAgentSession();
+  }
+
   const core = new BuildrCore();
   const stepPanel = new StepPanel(context.extensionUri);
   const secretStore = new BuildrSecretStore(context.secrets);
@@ -98,6 +306,12 @@ export function activate(context: vscode.ExtensionContext): void {
   stepPanel.onFileSearch((message) => {
     void handleFileSearch(message, stepPanel);
   });
+  stepPanel.onOpenSession((id) => {
+    openAgentSession(id, stepPanel);
+  });
+  stepPanel.onNewSession(() => {
+    createNewAgentSession(stepPanel);
+  });
   stepPanel.onRunPlan(() => {
     void runCurrentPlanFromUi(stepPanel);
   });
@@ -107,10 +321,13 @@ export function activate(context: vscode.ExtensionContext): void {
   stepPanel.onStop(() => {
     stopActiveOperation(stepPanel);
   });
+  stepPanel.onDispose(() => {
+    persistActiveAgentSession();
+  });
 
   context.subscriptions.push(
     vscode.commands.registerCommand("buildr.openChat", () => {
-      renderCurrentState(stepPanel);
+      createNewAgentSession(stepPanel);
     }),
     vscode.commands.registerCommand("buildr.plan", async () => {
       const goal = await vscode.window.showInputBox({
@@ -339,6 +556,7 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
 
   activeMode = message.mode;
   activePrompt = prompt;
+  finalSummaryState = undefined;
   messages.push({
     role: "user",
     text: `${modeLabel(message.mode)}: ${prompt}`
@@ -448,6 +666,7 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
   archiveCurrentPlan();
   activePrompt = goal;
   lastPlanPrompt = goal;
+  finalSummaryState = undefined;
   streamState = {
     active: true,
     status: "Indexing workspace context.",
@@ -1436,6 +1655,10 @@ async function selectVerificationCommand(plan: BuildrPlan): Promise<string | und
 }
 
 function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
+  if (finalSummary !== undefined) {
+    finalSummaryState = finalSummary;
+  }
+  persistActiveAgentSession();
   const state = {
     events,
     mode: activeMode,
@@ -1447,7 +1670,9 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
     ...(tokenBudgetState === undefined ? {} : { tokenBudget: tokenBudgetState }),
     ...(currentPlan === undefined ? {} : { plan: currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
-    ...(finalSummary === undefined ? {} : { finalSummary })
+    ...(finalSummaryState === undefined ? {} : { finalSummary: finalSummaryState }),
+    activeSessionId,
+    sessions: getSessionSummaries()
   };
   stepPanel.showState(state);
 }

@@ -19,6 +19,13 @@ export interface FileSearchMessage {
   query: string;
 }
 
+export interface SavedAgentSessionSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
@@ -51,6 +58,8 @@ export interface StepPanelState {
   activePrompt?: string;
   stream?: PlanStreamState;
   tokenBudget?: TokenBudgetState;
+  activeSessionId?: string;
+  sessions?: SavedAgentSessionSummary[];
 }
 
 export class StepPanel {
@@ -58,9 +67,12 @@ export class StepPanel {
   private approvalHandler: ((message: ApprovalMessage) => void) | undefined;
   private promptHandler: ((message: PromptMessage) => void) | undefined;
   private fileSearchHandler: ((message: FileSearchMessage) => void) | undefined;
+  private openSessionHandler: ((id: string) => void) | undefined;
+  private newSessionHandler: (() => void) | undefined;
   private runPlanHandler: (() => void) | undefined;
   private changePlanHandler: (() => void) | undefined;
   private stopHandler: (() => void) | undefined;
+  private disposeHandler: (() => void) | undefined;
   private messageDisposable: vscode.Disposable | undefined;
 
   constructor(private readonly extensionUri: vscode.Uri) {}
@@ -77,6 +89,14 @@ export class StepPanel {
     this.fileSearchHandler = handler;
   }
 
+  onOpenSession(handler: (id: string) => void): void {
+    this.openSessionHandler = handler;
+  }
+
+  onNewSession(handler: () => void): void {
+    this.newSessionHandler = handler;
+  }
+
   onRunPlan(handler: () => void): void {
     this.runPlanHandler = handler;
   }
@@ -87,6 +107,10 @@ export class StepPanel {
 
   onStop(handler: () => void): void {
     this.stopHandler = handler;
+  }
+
+  onDispose(handler: () => void): void {
+    this.disposeHandler = handler;
   }
 
   showState(state: StepPanelState): void {
@@ -186,9 +210,21 @@ export class StepPanel {
 
       if (isMessageOfType(message, "changePlan")) {
         this.changePlanHandler?.();
+        return;
+      }
+
+      const openSession = parseOpenSessionMessage(message);
+      if (openSession !== undefined) {
+        this.openSessionHandler?.(openSession);
+        return;
+      }
+
+      if (isMessageOfType(message, "newSession")) {
+        this.newSessionHandler?.();
       }
     });
     this.panel.onDidDispose(() => {
+      this.disposeHandler?.();
       this.panel = undefined;
       this.messageDisposable?.dispose();
       this.messageDisposable = undefined;
@@ -210,6 +246,7 @@ function renderState(state: StepPanelState): string {
   const tokenBudget = renderTokenBudget(state.tokenBudget);
   const canRunPlan = state.plan !== undefined && !state.running && state.pendingApproval === undefined;
   const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
+  const sessions = renderSessionControls(state.sessions ?? [], state.activeSessionId);
 
   return `<!doctype html>
 <html lang="en">
@@ -244,6 +281,10 @@ function renderState(state: StepPanelState): string {
       header {
         border-bottom: 1px solid var(--vscode-panel-border);
         padding: 12px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
       }
 
       h1, h2 {
@@ -329,6 +370,13 @@ function renderState(state: StepPanelState): string {
         margin-bottom: 8px;
       }
 
+      .session-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
       .section-heading {
         display: flex;
         align-items: center;
@@ -355,6 +403,10 @@ function renderState(state: StepPanelState): string {
       select {
         min-width: 112px;
         height: 28px;
+      }
+
+      .session-controls select {
+        width: min(360px, 45vw);
       }
 
       textarea {
@@ -433,6 +485,7 @@ function renderState(state: StepPanelState): string {
     <main>
       <header>
         <h1>Buildr</h1>
+        ${sessions}
       </header>
       <div class="content">
         ${messages}
@@ -465,6 +518,8 @@ function renderState(state: StepPanelState): string {
       const prompt = document.getElementById("prompt");
       const mode = document.getElementById("mode");
       const suggestions = document.getElementById("suggestions");
+      const sessionSelect = document.getElementById("session");
+      const newSession = document.getElementById("new-session");
       let activeMention = undefined;
 
       document.querySelectorAll("[data-approval]").forEach((button) => {
@@ -491,10 +546,23 @@ function renderState(state: StepPanelState): string {
           prompt: value,
           fileMentions: extractFileMentions(value)
         });
+        prompt.value = "";
+        suggestions.hidden = true;
+        suggestions.replaceChildren();
       });
 
       document.getElementById("stop").addEventListener("click", () => {
         vscode.postMessage({ type: "stop" });
+      });
+
+      sessionSelect?.addEventListener("change", () => {
+        if (sessionSelect.value.length > 0) {
+          vscode.postMessage({ type: "openSession", id: sessionSelect.value });
+        }
+      });
+
+      newSession?.addEventListener("click", () => {
+        vscode.postMessage({ type: "newSession" });
       });
 
       document.getElementById("run-plan")?.addEventListener("click", () => {
@@ -627,6 +695,21 @@ function renderState(state: StepPanelState): string {
 
 function renderModeOption(value: BuildrChatMode, label: string, selected: BuildrChatMode): string {
   return `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`;
+}
+
+function renderSessionControls(sessions: SavedAgentSessionSummary[], activeSessionId: string | undefined): string {
+  const options = sessions
+    .map((session) => {
+      const label = `${session.title} - ${session.updatedAt}`;
+      return `<option value="${escapeHtml(session.id)}" ${session.id === activeSessionId ? "selected" : ""}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  return `<div class="session-controls">
+    <select id="session" aria-label="Saved Buildr agents">
+      ${options}
+    </select>
+    <button type="button" class="secondary" id="new-session">New</button>
+  </div>`;
 }
 
 function renderPlans(history: PlanHistoryEntry[], activePlan: BuildrPlan | undefined, canRunPlan: boolean, running: boolean): string {
@@ -776,6 +859,13 @@ function parseFileSearchMessage(message: unknown): FileSearchMessage | undefined
   return {
     query: message.query
   };
+}
+
+function parseOpenSessionMessage(message: unknown): string | undefined {
+  if (!isRecord(message) || message.type !== "openSession" || typeof message.id !== "string") {
+    return undefined;
+  }
+  return message.id;
 }
 
 function isMessageOfType(message: unknown, type: string): boolean {

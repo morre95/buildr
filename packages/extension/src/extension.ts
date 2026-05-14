@@ -138,7 +138,7 @@ function createNewAgentSession(stepPanel: StepPanel): void {
   activeSessionId = createAgentSessionId();
   resetAgentState();
   persistActiveAgentSession();
-  renderCurrentState(stepPanel);
+  renderCurrentState(stepPanel, undefined, { reveal: true });
 }
 
 function openAgentSession(id: string, stepPanel: StepPanel): void {
@@ -159,7 +159,34 @@ function openAgentSession(id: string, stepPanel: StepPanel): void {
   persistActiveAgentSession();
   restoreAgentSession(session);
   persistActiveAgentSession();
-  renderCurrentState(stepPanel);
+  renderCurrentState(stepPanel, undefined, { reveal: true });
+}
+
+function deleteAgentSession(id: string, stepPanel: StepPanel): void {
+  if (isRunning) {
+    vscode.window.showWarningMessage("Stop the active Buildr operation before deleting an agent.");
+    renderCurrentState(stepPanel);
+    return;
+  }
+  const beforeCount = savedAgentSessions.length;
+  savedAgentSessions = savedAgentSessions.filter((session) => session.id !== id);
+  if (savedAgentSessions.length === beforeCount) {
+    vscode.window.showWarningMessage("Buildr could not find that saved agent.");
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  if (id === activeSessionId) {
+    const next = savedAgentSessions[0];
+    if (next !== undefined) {
+      restoreAgentSession(next);
+    } else {
+      createBlankAgentSession();
+    }
+  }
+
+  void extensionContext?.workspaceState.update(AGENT_SESSIONS_KEY, savedAgentSessions);
+  renderCurrentState(stepPanel, undefined, { reveal: true });
 }
 
 function persistActiveAgentSession(): void {
@@ -308,6 +335,9 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   stepPanel.onOpenSession((id) => {
     openAgentSession(id, stepPanel);
+  });
+  stepPanel.onDeleteSession((id) => {
+    deleteAgentSession(id, stepPanel);
   });
   stepPanel.onNewSession(() => {
     createNewAgentSession(stepPanel);
@@ -555,7 +585,7 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
   }
 
   activeMode = message.mode;
-  activePrompt = prompt;
+  activePrompt = "";
   finalSummaryState = undefined;
   messages.push({
     role: "user",
@@ -664,7 +694,7 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
   isRunning = true;
   activeAbortController = new AbortController();
   archiveCurrentPlan();
-  activePrompt = goal;
+  activePrompt = "";
   lastPlanPrompt = goal;
   finalSummaryState = undefined;
   streamState = {
@@ -1654,7 +1684,7 @@ async function selectVerificationCommand(plan: BuildrPlan): Promise<string | und
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
-function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
+function renderCurrentState(stepPanel: StepPanel, finalSummary?: string, options: { reveal?: boolean } = {}): void {
   if (finalSummary !== undefined) {
     finalSummaryState = finalSummary;
   }
@@ -1674,7 +1704,7 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
     activeSessionId,
     sessions: getSessionSummaries()
   };
-  stepPanel.showState(state);
+  stepPanel.showState(state, options);
 }
 
 function getMaxParallelSubAgents(): number {

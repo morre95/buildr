@@ -68,6 +68,7 @@ export class StepPanel {
   private promptHandler: ((message: PromptMessage) => void) | undefined;
   private fileSearchHandler: ((message: FileSearchMessage) => void) | undefined;
   private openSessionHandler: ((id: string) => void) | undefined;
+  private deleteSessionHandler: ((id: string) => void) | undefined;
   private newSessionHandler: (() => void) | undefined;
   private runPlanHandler: (() => void) | undefined;
   private changePlanHandler: (() => void) | undefined;
@@ -93,6 +94,10 @@ export class StepPanel {
     this.openSessionHandler = handler;
   }
 
+  onDeleteSession(handler: (id: string) => void): void {
+    this.deleteSessionHandler = handler;
+  }
+
   onNewSession(handler: () => void): void {
     this.newSessionHandler = handler;
   }
@@ -113,13 +118,15 @@ export class StepPanel {
     this.disposeHandler = handler;
   }
 
-  showState(state: StepPanelState): void {
-    this.ensurePanel();
+  showState(state: StepPanelState, options: { reveal?: boolean } = {}): void {
+    const created = this.ensurePanel();
     if (this.panel === undefined) {
       return;
     }
     this.panel.webview.html = renderState(state);
-    this.panel.reveal(vscode.ViewColumn.Beside);
+    if (created || options.reveal === true) {
+      this.panel.reveal(vscode.ViewColumn.Beside);
+    }
   }
 
   postFileSearchResults(results: string[]): void {
@@ -164,19 +171,23 @@ export class StepPanel {
     });
   }
 
-  private ensurePanel(): void {
-    this.panel = this.panel ?? vscode.window.createWebviewPanel(
-      "buildr.stepPanel",
-      "Buildr",
-      vscode.ViewColumn.Beside,
-      {
-        enableScripts: true,
-        localResourceRoots: [this.extensionUri]
-      }
-    );
+  private ensurePanel(): boolean {
+    let created = false;
+    if (this.panel === undefined) {
+      this.panel = vscode.window.createWebviewPanel(
+        "buildr.stepPanel",
+        "Buildr",
+        vscode.ViewColumn.Beside,
+        {
+          enableScripts: true,
+          localResourceRoots: [this.extensionUri]
+        }
+      );
+      created = true;
+    }
 
     if (this.messageDisposable !== undefined || this.panel === undefined) {
-      return;
+      return created;
     }
 
     this.messageDisposable = this.panel.webview.onDidReceiveMessage((message: unknown) => {
@@ -219,6 +230,12 @@ export class StepPanel {
         return;
       }
 
+      const deleteSession = parseDeleteSessionMessage(message);
+      if (deleteSession !== undefined) {
+        this.deleteSessionHandler?.(deleteSession);
+        return;
+      }
+
       if (isMessageOfType(message, "newSession")) {
         this.newSessionHandler?.();
       }
@@ -229,6 +246,7 @@ export class StepPanel {
       this.messageDisposable?.dispose();
       this.messageDisposable = undefined;
     });
+    return created;
   }
 }
 
@@ -520,6 +538,7 @@ function renderState(state: StepPanelState): string {
       const suggestions = document.getElementById("suggestions");
       const sessionSelect = document.getElementById("session");
       const newSession = document.getElementById("new-session");
+      const deleteSession = document.getElementById("delete-session");
       let activeMention = undefined;
 
       document.querySelectorAll("[data-approval]").forEach((button) => {
@@ -563,6 +582,12 @@ function renderState(state: StepPanelState): string {
 
       newSession?.addEventListener("click", () => {
         vscode.postMessage({ type: "newSession" });
+      });
+
+      deleteSession?.addEventListener("click", () => {
+        if (sessionSelect?.value?.length > 0) {
+          vscode.postMessage({ type: "deleteSession", id: sessionSelect.value });
+        }
       });
 
       document.getElementById("run-plan")?.addEventListener("click", () => {
@@ -709,6 +734,7 @@ function renderSessionControls(sessions: SavedAgentSessionSummary[], activeSessi
       ${options}
     </select>
     <button type="button" class="secondary" id="new-session">New</button>
+    <button type="button" class="secondary" id="delete-session" ${sessions.length === 0 ? "disabled" : ""}>Delete</button>
   </div>`;
 }
 
@@ -863,6 +889,13 @@ function parseFileSearchMessage(message: unknown): FileSearchMessage | undefined
 
 function parseOpenSessionMessage(message: unknown): string | undefined {
   if (!isRecord(message) || message.type !== "openSession" || typeof message.id !== "string") {
+    return undefined;
+  }
+  return message.id;
+}
+
+function parseDeleteSessionMessage(message: unknown): string | undefined {
+  if (!isRecord(message) || message.type !== "deleteSession" || typeof message.id !== "string") {
     return undefined;
   }
   return message.id;

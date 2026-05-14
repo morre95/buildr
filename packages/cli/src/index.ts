@@ -8,15 +8,17 @@ import {
   assessRemoteCompatibility,
   loadBuiltInRulePacks,
   loadWorkspaceMcpConfig,
+  MainAgentSession,
   observationsFromLog,
   rankWorkspaceContext,
   runCompletionGate,
   runMcpDoctor,
   type ExecutionEvent,
+  type TokenBudgetConfig,
   type WorkspaceIndex
 } from "@buildr/core";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { renderStepReportToString } from "./renderer.js";
 
 const [, , command, ...args] = process.argv;
@@ -77,6 +79,10 @@ interface CliOptions {
   provider: "ollama" | "lmstudio-openai" | "lmstudio-native" | "openai-compatible";
   baseUrl?: string;
   modelId?: string;
+  maxParallelSubAgents: number;
+  hardTokenCap: number;
+  inputUsdPerMillion: number;
+  outputUsdPerMillion: number;
 }
 
 async function runReadOnlyPlan(goal: string, options: CliOptions): Promise<{ title: string; summary: string; events: ExecutionEvent[]; warnings: string[] }> {
@@ -108,6 +114,34 @@ async function runReadOnlyPlan(goal: string, options: CliOptions): Promise<{ tit
       warnings: []
     }
   ];
+  if (options.modelId !== undefined) {
+    const targets = await collectCliPlanTargets(process.cwd(), plan);
+    if (targets.length > 0) {
+      const contextSummary = await createCliContextSummary(process.cwd(), goal);
+      const sessionOptions = {
+        core,
+        modelId: options.modelId,
+        goal,
+        tasks: targets,
+        maxParallelSubAgents: options.maxParallelSubAgents,
+        tokenBudget: createCliTokenBudgetConfig(options)
+      };
+      const session = new MainAgentSession(contextSummary.length === 0 ? sessionOptions : {
+        ...sessionOptions,
+        contextSummary
+      });
+      const report = await session.run();
+      events.push({
+        id: "agents:parallel",
+        title: "Run parallel sub-agents",
+        status: report.patchProposals.length > 0 ? "completed" : "failed",
+        tool: "main_agent",
+        target: process.cwd(),
+        summary: `Ran ${report.subAgents.length} sub-agent(s); received ${report.patchProposals.length} patch proposal(s). Tokens: ${report.tokenBudget.totalTokens}/${report.tokenBudget.hardTokenCap}, estimated cost $${report.tokenBudget.estimatedCostUsd.toFixed(6)}.`,
+        warnings: report.warnings
+      });
+    }
+  }
   const gate = runCompletionGate({ events, rulePacks: loadBuiltInRulePacks(plan.rulePacks) });
   return {
     title: "Buildr Run",
@@ -136,6 +170,10 @@ function parseCliOptions(args: string[]): CliOptions {
   let provider: CliOptions["provider"] = "ollama";
   let baseUrl: string | undefined;
   let modelId: string | undefined;
+  let maxParallelSubAgents = 3;
+  let hardTokenCap = 32000;
+  let inputUsdPerMillion = 0;
+  let outputUsdPerMillion = 0;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -149,6 +187,18 @@ function parseCliOptions(args: string[]): CliOptions {
     } else if (arg === "--model" && next !== undefined) {
       modelId = next;
       index += 1;
+    } else if (arg === "--max-parallel-sub-agents" && next !== undefined) {
+      maxParallelSubAgents = positiveNumber(next, maxParallelSubAgents);
+      index += 1;
+    } else if (arg === "--hard-token-cap" && next !== undefined) {
+      hardTokenCap = positiveNumber(next, hardTokenCap);
+      index += 1;
+    } else if (arg === "--input-usd-per-million" && next !== undefined) {
+      inputUsdPerMillion = nonNegativeNumber(next, inputUsdPerMillion);
+      index += 1;
+    } else if (arg === "--output-usd-per-million" && next !== undefined) {
+      outputUsdPerMillion = nonNegativeNumber(next, outputUsdPerMillion);
+      index += 1;
     } else if (arg !== undefined) {
       positionals.push(arg);
     }
@@ -157,8 +207,86 @@ function parseCliOptions(args: string[]): CliOptions {
   return {
     positionals,
     provider,
+    maxParallelSubAgents,
+    hardTokenCap,
+    inputUsdPerMillion,
+    outputUsdPerMillion,
     ...(baseUrl === undefined ? {} : { baseUrl }),
     ...(modelId === undefined ? {} : { modelId })
+  };
+}
+
+function positiveNumber(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function nonNegativeNumber(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+async function collectCliPlanTargets(root: string, plan: { steps: Array<{ kind: string; targets: string[]; title: string }> }): Promise<Array<{ id: string; title: string; path: string; currentContent: string }>> {
+  const targets: Array<{ id: string; title: string; path: string; currentContent: string }> = [];
+  const seen = new Set<string>();
+  for (const step of plan.steps) {
+    if (step.kind !== "write") {
+      continue;
+    }
+    for (const target of step.targets) {
+      const path = resolveCliPlanTarget(root, target);
+      if (path === undefined || seen.has(path)) {
+        continue;
+      }
+      seen.add(path);
+      targets.push({
+        id: `patch_${targets.length + 1}`,
+        title: step.title,
+        path,
+        currentContent: await readTextFileIfExists(path)
+      });
+    }
+  }
+  return targets;
+}
+
+function resolveCliPlanTarget(root: string, target: string): string | undefined {
+  const trimmed = target.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed === "." ||
+    trimmed === "./" ||
+    trimmed.includes("${") ||
+    trimmed.includes("*") ||
+    trimmed.toLowerCase().includes("approved ") ||
+    trimmed.endsWith("/")
+  ) {
+    return undefined;
+  }
+  const resolved = resolve(root, trimmed);
+  const relativePath = relative(root, resolved);
+  if (relativePath.startsWith("..") || relativePath === "") {
+    return undefined;
+  }
+  return resolved;
+}
+
+async function readTextFileIfExists(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function createCliTokenBudgetConfig(options: CliOptions): TokenBudgetConfig {
+  return {
+    hardTokenCap: options.hardTokenCap,
+    warningThresholds: [0.7, 0.9],
+    costRate: {
+      inputUsdPerMillion: options.inputUsdPerMillion,
+      outputUsdPerMillion: options.outputUsdPerMillion
+    }
   };
 }
 
@@ -192,7 +320,7 @@ function printUsage(): void {
   process.stderr.write([
     "Usage:",
     "  buildr plan [--model qwen2.5-coder] [--provider ollama] [--base-url http://127.0.0.1:11434] \"task description\"",
-    "  buildr run [--model qwen2.5-coder] \"task description\"",
+    "  buildr run [--model qwen2.5-coder] [--hard-token-cap 32000] [--max-parallel-sub-agents 3] \"task description\"",
     "  buildr context \"query\"",
     "  buildr index",
     "  buildr mcp list",

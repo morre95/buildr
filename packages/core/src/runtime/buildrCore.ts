@@ -4,6 +4,7 @@ import { LMStudioNativeAdapter } from "../providers/lmStudioNative.js";
 import { LMStudioOpenAIAdapter } from "../providers/lmStudioOpenAI.js";
 import { OllamaAdapter } from "../providers/ollama.js";
 import type { ChatMessage, ModelAdapter, ProviderId } from "../types.js";
+import { TokenBudgetExceededError, type TokenBudgetTracker, type TokenModelCall } from "./tokenBudget.js";
 
 export interface BuildrCoreOptions {
   model?: ModelAdapter;
@@ -20,6 +21,7 @@ export interface ModelPlanResult {
   source: "model" | "fallback";
   rawResponse?: string;
   warnings: string[];
+  tokenCall?: TokenModelCall;
 }
 
 export interface ModelFileRewriteResult {
@@ -27,6 +29,7 @@ export interface ModelFileRewriteResult {
   summary: string;
   rawResponse: string;
   warnings: string[];
+  tokenCall?: TokenModelCall;
 }
 
 export class BuildrCore {
@@ -48,15 +51,24 @@ export class BuildrCore {
     contextSummary?: string;
     signal?: AbortSignal;
     onDelta?: (content: string) => void;
+    budget?: TokenBudgetTracker;
   }): Promise<ModelPlanResult> {
     const fallback = this.createPlan(options.goal);
     let rawResponse = "";
+    let budgetInput: { inputTokens: number; approximate: boolean } | undefined;
 
     try {
+      const messages = createPlanMessages(options.goal, options.contextSummary);
+      budgetInput = await options.budget?.prepareModelCall({
+        adapter: this.model,
+        modelId: options.modelId,
+        label: "main_agent.plan",
+        messages
+      });
       for await (const delta of this.model.chat({
         model: options.modelId,
         temperature: 0.1,
-        messages: createPlanMessages(options.goal, options.contextSummary)
+        messages
       }, options.signal === undefined ? {} : { signal: options.signal })) {
         if (delta.type === "text" && delta.content !== undefined) {
           rawResponse += delta.content;
@@ -64,15 +76,27 @@ export class BuildrCore {
         }
       }
 
+      const tokenCall = budgetInput === undefined ? undefined : await options.budget?.completeModelCall({
+        adapter: this.model,
+        modelId: options.modelId,
+        label: "main_agent.plan",
+        response: rawResponse,
+        inputTokens: budgetInput.inputTokens,
+        inputApproximate: budgetInput.approximate
+      });
       const parsed = parsePlanResponse(rawResponse);
       const plan = validatePlan(normalizePlan(parsed, options.goal));
       return {
         plan,
         source: "model",
         rawResponse,
-        warnings: []
+        warnings: [],
+        ...(tokenCall === undefined ? {} : { tokenCall })
       };
     } catch (error) {
+      if (error instanceof TokenBudgetExceededError) {
+        throw error;
+      }
       return {
         plan: fallback,
         source: "fallback",
@@ -89,24 +113,43 @@ export class BuildrCore {
     currentContent: string;
     contextSummary?: string;
     signal?: AbortSignal;
+    budget?: TokenBudgetTracker;
+    budgetLabel?: string;
   }): Promise<ModelFileRewriteResult> {
     let rawResponse = "";
+    const messages = createFileRewriteMessages(options);
+    const label = options.budgetLabel ?? "main_agent.rewrite";
+    const budgetInput = await options.budget?.prepareModelCall({
+      adapter: this.model,
+      modelId: options.modelId,
+      label,
+      messages
+    });
     for await (const delta of this.model.chat({
       model: options.modelId,
       temperature: 0.1,
-      messages: createFileRewriteMessages(options)
+      messages
     }, options.signal === undefined ? {} : { signal: options.signal })) {
       if (delta.type === "text" && delta.content !== undefined) {
         rawResponse += delta.content;
       }
     }
 
+    const tokenCall = budgetInput === undefined ? undefined : await options.budget?.completeModelCall({
+      adapter: this.model,
+      modelId: options.modelId,
+      label,
+      response: rawResponse,
+      inputTokens: budgetInput.inputTokens,
+      inputApproximate: budgetInput.approximate
+    });
     const parsed = parseFileRewriteResponse(rawResponse);
     return {
       updatedContent: parsed.updatedContent,
       summary: parsed.summary,
       rawResponse,
-      warnings: parsed.updatedContent === options.currentContent ? ["Model returned content identical to the current file."] : []
+      warnings: parsed.updatedContent === options.currentContent ? ["Model returned content identical to the current file."] : [],
+      ...(tokenCall === undefined ? {} : { tokenCall })
     };
   }
 

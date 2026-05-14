@@ -8,6 +8,7 @@ import {
   createTextPatch,
   eventFromPermissionDecision,
   loadBuiltInRulePacks,
+  MainAgentSession,
   rankWorkspaceContext,
   requireTrustedWorkspace,
   runCompletionGate,
@@ -19,9 +20,11 @@ import {
   type ModelInfo,
   type PendingApproval,
   type ProviderId,
-  type TextPatch
+  type TextPatch,
+  type TokenBudgetConfig,
+  type TokenBudgetState
 } from "@buildr/core";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import * as vscode from "vscode";
 import { BuildrSecretStore } from "./credentials.js";
@@ -49,6 +52,7 @@ let events: ExecutionEvent[] = [];
 let pendingApproval: PendingApproval<TextPatch | TerminalApprovalPayload> | undefined;
 let queuedVerificationCommand: string | undefined;
 let queuedWriteTargets: PlanWriteTarget[] = [];
+let queuedPatchApprovals: PendingApproval<TextPatch>[] = [];
 let activeMode: BuildrChatMode = "plan";
 let isRunning = false;
 let messages: ChatMessage[] = [];
@@ -57,6 +61,7 @@ let lastPlanPrompt = "";
 let streamState: PlanStreamState | undefined;
 let planHistory: PlanHistoryEntry[] = [];
 let currentPlanWarnings: string[] = [];
+let tokenBudgetState: TokenBudgetState | undefined;
 
 interface TerminalApprovalPayload {
   command: string;
@@ -461,6 +466,8 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
     queuedWriteTargets = [];
     pendingApproval = undefined;
     queuedVerificationCommand = undefined;
+    queuedPatchApprovals = [];
+    tokenBudgetState = undefined;
 
     if (result.warnings.length > 0) {
       events.push({
@@ -634,6 +641,7 @@ function stopActiveOperation(stepPanel: StepPanel): void {
   activeAbortController = undefined;
   isRunning = false;
   queuedWriteTargets = [];
+  queuedPatchApprovals = [];
   events.push({
     id: `cancelled:${Date.now()}`,
     title: "Stop requested",
@@ -682,21 +690,11 @@ async function runPhase1A(stepPanel: StepPanel): Promise<void> {
     events.push(searchEvent);
   }
 
-  const suggestedTestCommand = await findTaskCommand("test");
-  const defaultVerificationCommand = currentPlan.verification.commands[0] ?? suggestedTestCommand ?? "";
-  queuedVerificationCommand = await vscode.window.showInputBox({
-    title: "Buildr: Optional Verification Command",
-    prompt: "Command to run after approved patch, or leave blank to skip.",
-    value: defaultVerificationCommand,
-    ignoreFocusOut: true
-  });
-  if (queuedVerificationCommand?.trim().length === 0) {
-    queuedVerificationCommand = undefined;
-  }
+  queuedVerificationCommand = await selectVerificationCommand(currentPlan);
 
   queuedWriteTargets = collectPlanWriteTargets(currentPlan);
   if (queuedWriteTargets.length > 0) {
-    await queueNextPlanPatchApproval(stepPanel);
+    await queueParallelPlanPatchApprovals(stepPanel);
     return;
   }
 
@@ -721,9 +719,7 @@ async function runPhase1A(stepPanel: StepPanel): Promise<void> {
   }
 
   if (queuedVerificationCommand !== undefined) {
-    pendingApproval = createTerminalApproval(queuedVerificationCommand);
-    events.push(eventFromPermissionDecision(pendingApproval, "ask"));
-    renderCurrentState(stepPanel);
+    renderCurrentState(stepPanel, await queueVerificationApproval() === "skipped" ? createFinalReportSummary() : undefined);
     return;
   }
 
@@ -767,15 +763,17 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
       });
       addScopeFidelityEvent(approval.target);
 
-      if (queuedWriteTargets.length > 0) {
-        await queueNextPlanPatchApproval(stepPanel);
+      if (queuedPatchApprovals.length > 0) {
+        pendingApproval = queuedPatchApprovals.shift();
+        if (pendingApproval !== undefined) {
+          events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+        }
+        renderCurrentState(stepPanel);
         return;
       }
 
       if (queuedVerificationCommand !== undefined) {
-        pendingApproval = createTerminalApproval(queuedVerificationCommand);
-        events.push(eventFromPermissionDecision(pendingApproval, "ask"));
-        renderCurrentState(stepPanel);
+        renderCurrentState(stepPanel, await queueVerificationApproval() === "skipped" ? createFinalReportSummary() : undefined);
         return;
       }
     } else if (approval.tool === "run_terminal") {
@@ -945,38 +943,105 @@ async function createPatchApprovalForActiveEditor(goal: string): Promise<Pending
   };
 }
 
-async function queueNextPlanPatchApproval(stepPanel: StepPanel): Promise<void> {
-  const nextTarget = queuedWriteTargets.shift();
-  if (nextTarget === undefined || currentPlan === undefined) {
+async function queueParallelPlanPatchApprovals(stepPanel: StepPanel): Promise<void> {
+  if (queuedWriteTargets.length === 0 || currentPlan === undefined) {
     if (queuedVerificationCommand !== undefined) {
-      pendingApproval = createTerminalApproval(queuedVerificationCommand);
-      events.push(eventFromPermissionDecision(pendingApproval, "ask"));
-      renderCurrentState(stepPanel);
+      renderCurrentState(stepPanel, await queueVerificationApproval() === "skipped" ? createFinalReportSummary() : undefined);
       return;
     }
     renderCurrentState(stepPanel, createFinalReportSummary());
     return;
   }
 
+  const targets = queuedWriteTargets.splice(0);
+  let finalSummary: string | undefined;
   try {
-    const approval = await createPatchApprovalForPlanTarget(currentPlan.goal, nextTarget);
-    pendingApproval = approval;
-    events.push(eventFromPermissionDecision(approval, "ask"));
+    const approvals = await createPatchApprovalsForPlanTargets(currentPlan.goal, targets, stepPanel);
+    queuedPatchApprovals = approvals;
+    pendingApproval = queuedPatchApprovals.shift();
+    if (pendingApproval !== undefined) {
+      events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+    } else if (queuedVerificationCommand !== undefined) {
+      if (await queueVerificationApproval() === "skipped") {
+        finalSummary = createFinalReportSummary();
+      }
+    }
   } catch (error) {
     events.push({
       id: `patch:${Date.now()}:failed`,
-      title: `Propose patch for ${nextTarget.title}`,
+      title: "Propose parallel sub-agent patches",
       status: "failed",
       tool: "propose_patch",
-      target: nextTarget.path,
       summary: error instanceof Error ? error.message : "Model patch proposal failed.",
       warnings: []
     });
-    await queueNextPlanPatchApproval(stepPanel);
-    return;
   }
 
-  renderCurrentState(stepPanel);
+  renderCurrentState(stepPanel, finalSummary);
+}
+
+async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWriteTarget[], stepPanel: StepPanel): Promise<Array<PendingApproval<TextPatch>>> {
+  const configuredCore = createConfiguredCore();
+  const modelId = getConfiguredModelId();
+  const contextSummary = await createWorkspaceContextSummary(goal);
+  const tasks = await Promise.all(targets.map(async (target, index) => ({
+    id: `patch_${index + 1}`,
+    title: target.title,
+    path: target.path,
+    currentContent: await readTextFileIfExists(target.path),
+    ...(contextSummary === undefined ? {} : { contextSummary })
+  })));
+  const sessionOptions = {
+    core: configuredCore,
+    modelId,
+    goal,
+    transcript: messages.map((message) => ({ role: message.role, text: message.text })),
+    tasks,
+    maxParallelSubAgents: getMaxParallelSubAgents(),
+    tokenBudget: getTokenBudgetConfig(),
+    onTokenBudgetUpdate: (state: TokenBudgetState) => {
+      tokenBudgetState = state;
+      renderCurrentState(stepPanel);
+    },
+    ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
+  };
+  const session = new MainAgentSession(contextSummary === undefined ? sessionOptions : {
+    ...sessionOptions,
+    contextSummary
+  });
+  const report = await session.run();
+  tokenBudgetState = report.tokenBudget;
+  events.push({
+    id: `agents:${Date.now()}`,
+    title: "Run parallel sub-agents",
+    status: report.patchProposals.length > 0 ? "completed" : "failed",
+    tool: "main_agent",
+    summary: `Ran ${report.subAgents.length} sub-agent(s); received ${report.patchProposals.length} patch proposal(s). Tokens: ${report.tokenBudget.totalTokens}/${report.tokenBudget.hardTokenCap}, estimated cost $${report.tokenBudget.estimatedCostUsd.toFixed(6)}.`,
+    warnings: report.warnings
+  });
+
+  return report.subAgents.flatMap((result) => {
+    if (result.patch === undefined) {
+      return [];
+    }
+    return [{
+      id: `approval:apply_patch:${Date.now()}:${result.id}`,
+      title: `Apply ${result.title}`,
+      tool: "apply_patch",
+      target: result.patch.path,
+      risk: "high" as const,
+      details: [
+        result.summary,
+        "",
+        `Sub-agent: ${result.id}`,
+        `File: ${result.patch.path}`,
+        `Before hash: ${result.patch.beforeHash}`,
+        `After hash: ${result.patch.afterHash}`,
+        `Warnings: ${result.warnings.join("; ") || "none"}`
+      ].join("\n"),
+      payload: result.patch
+    }];
+  });
 }
 
 async function createPatchApprovalForPlanTarget(goal: string, target: PlanWriteTarget): Promise<PendingApproval<TextPatch>> {
@@ -1073,6 +1138,33 @@ async function applyApprovedPatch(patch: TextPatch): Promise<void> {
   await writeFile(patch.path, next, "utf8");
 }
 
+async function queueVerificationApproval(): Promise<"queued" | "skipped"> {
+  if (queuedVerificationCommand === undefined) {
+    return "skipped";
+  }
+
+  const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+  const skippedReason = await getVerificationSkipReason(queuedVerificationCommand, cwd);
+  if (skippedReason !== undefined) {
+    events.push({
+      id: `verify:skipped:${Date.now()}`,
+      title: "Skip verification command",
+      status: "completed",
+      tool: "run_terminal",
+      target: cwd,
+      summary: skippedReason,
+      evidence: { skippedReason },
+      warnings: [skippedReason]
+    });
+    queuedVerificationCommand = undefined;
+    return "skipped";
+  }
+
+  pendingApproval = createTerminalApproval(queuedVerificationCommand);
+  events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+  return "queued";
+}
+
 function createTerminalApproval(command: string): PendingApproval<TerminalApprovalPayload> {
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   return {
@@ -1086,6 +1178,85 @@ function createTerminalApproval(command: string): PendingApproval<TerminalApprov
   };
 }
 
+async function getVerificationSkipReason(command: string, cwd: string): Promise<string | undefined> {
+  const file = findNodeCheckFileArgument(command);
+  if (file === undefined) {
+    return undefined;
+  }
+
+  const path = resolve(cwd, file);
+  try {
+    await access(path);
+    return undefined;
+  } catch {
+    return `Skipped verification because "${command}" references missing file "${file}".`;
+  }
+}
+
+function findNodeCheckFileArgument(command: string): string | undefined {
+  const args = splitShellWords(command);
+  const nodeIndex = args.findIndex((arg) => arg === "node" || arg.endsWith("/node"));
+  if (nodeIndex === -1) {
+    return undefined;
+  }
+
+  const checkIndex = args.findIndex((arg, index) => index > nodeIndex && (arg === "--check" || arg === "-c"));
+  if (checkIndex === -1) {
+    return undefined;
+  }
+
+  return args.slice(checkIndex + 1).find((arg) => !arg.startsWith("-"));
+}
+
+function splitShellWords(command: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: "'" | "\"" | undefined;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === undefined) {
+      continue;
+    }
+    if (quote !== undefined) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (/\s/u.test(char)) {
+      if (current.length > 0) {
+        words.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (current.length > 0) {
+    words.push(current);
+  }
+  return words;
+}
+
+async function selectVerificationCommand(plan: BuildrPlan): Promise<string | undefined> {
+  const planCommand = plan.verification.commands.find((command) => command.trim().length > 0)?.trim();
+  if (planCommand !== undefined) {
+    return planCommand;
+  }
+
+  const suggestedTestCommand = await findTaskCommand("test");
+  const trimmed = suggestedTestCommand?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
 function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
   const state = {
     events,
@@ -1095,11 +1266,29 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string): void {
     activePrompt,
     planHistory,
     ...(streamState === undefined ? {} : { stream: streamState }),
+    ...(tokenBudgetState === undefined ? {} : { tokenBudget: tokenBudgetState }),
     ...(currentPlan === undefined ? {} : { plan: currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
     ...(finalSummary === undefined ? {} : { finalSummary })
   };
   stepPanel.showState(state);
+}
+
+function getMaxParallelSubAgents(): number {
+  return vscode.workspace.getConfiguration("buildr.agents").get<number>("maxParallelSubAgents", 3);
+}
+
+function getTokenBudgetConfig(): TokenBudgetConfig {
+  const contextConfig = vscode.workspace.getConfiguration("buildr.context");
+  const costConfig = vscode.workspace.getConfiguration("buildr.cost");
+  return {
+    hardTokenCap: contextConfig.get<number>("hardTokenCap", contextConfig.get<number>("tokenBudget", 32000)),
+    warningThresholds: contextConfig.get<number[]>("warningThresholds", [0.7, 0.9]),
+    costRate: {
+      inputUsdPerMillion: costConfig.get<number>("inputUsdPerMillion", 0),
+      outputUsdPerMillion: costConfig.get<number>("outputUsdPerMillion", 0)
+    }
+  };
 }
 
 function createFinalReportSummary(): string {

@@ -9,6 +9,11 @@ export async function openBuildrSettings(): Promise<void> {
     "Ollama base URL",
     "LM Studio base URL",
     "Token budget",
+    "Hard token cap",
+    "Token warning thresholds",
+    "Max parallel sub-agents",
+    "Input token cost",
+    "Output token cost",
     "Default write policy",
     "Cloud-send policy",
     "Rule packs",
@@ -45,6 +50,21 @@ export async function openBuildrSettings(): Promise<void> {
       break;
     case "Token budget":
       await updateNumber("buildr.context", "tokenBudget", "Maximum context token budget.", target);
+      break;
+    case "Hard token cap":
+      await updateNumber("buildr.context", "hardTokenCap", "Hard token cap for one agent session.", target);
+      break;
+    case "Token warning thresholds":
+      await updateNumberList("buildr.context", "warningThresholds", "Comma-separated warning thresholds such as 0.7,0.9.", target);
+      break;
+    case "Max parallel sub-agents":
+      await updateNumber("buildr.agents", "maxParallelSubAgents", "Maximum number of sub-agents that may run in parallel.", target);
+      break;
+    case "Input token cost":
+      await updateNumber("buildr.cost", "inputUsdPerMillion", "Estimated input-token cost in USD per million tokens.", target);
+      break;
+    case "Output token cost":
+      await updateNumber("buildr.cost", "outputUsdPerMillion", "Estimated output-token cost in USD per million tokens.", target);
       break;
     case "Default write policy":
       await updateChoice("buildr.permissions", "defaultWritePolicy", ["context_review", "require_approval", "always_confirm", "always_deny"], target);
@@ -102,6 +122,30 @@ async function updateNumber(section: string, key: string, prompt: string, target
   if (value !== undefined) {
     await config.update(key, Number(value), target);
   }
+}
+
+async function updateNumberList(section: string, key: string, prompt: string, target: vscode.ConfigurationTarget): Promise<void> {
+  const config = vscode.workspace.getConfiguration(section);
+  const current = config.get<number[]>(key, []);
+  const value = await vscode.window.showInputBox({
+    title: `Buildr: ${key}`,
+    value: current.join(","),
+    prompt,
+    ignoreFocusOut: true,
+    validateInput: (input) => parseNumberList(input) === undefined ? "Enter comma-separated numbers between 0 and 1." : undefined
+  });
+  const parsed = value === undefined ? undefined : parseNumberList(value);
+  if (parsed !== undefined) {
+    await config.update(key, parsed, target);
+  }
+}
+
+function parseNumberList(input: string): number[] | undefined {
+  const values = input.split(",").map((part) => Number(part.trim()));
+  if (values.length === 0 || values.some((value) => !Number.isFinite(value) || value <= 0 || value >= 1)) {
+    return undefined;
+  }
+  return values;
 }
 
 async function updateRulePacks(target: vscode.ConfigurationTarget): Promise<void> {

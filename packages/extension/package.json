@@ -118,6 +118,41 @@
           "minimum": 1000,
           "description": "Maximum context token budget Buildr should target."
         },
+        "buildr.context.hardTokenCap": {
+          "type": "number",
+          "default": 32000,
+          "minimum": 1000,
+          "description": "Hard cap for tokens Buildr may send or generate in one agent session. Buildr blocks before a model call that would exceed this cap."
+        },
+        "buildr.context.warningThresholds": {
+          "type": "array",
+          "default": [0.7, 0.9],
+          "items": {
+            "type": "number",
+            "minimum": 0.01,
+            "maximum": 0.99
+          },
+          "description": "Fractional token budget thresholds that emit warnings during an agent session."
+        },
+        "buildr.agents.maxParallelSubAgents": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum number of Buildr sub-agents that may run in parallel."
+        },
+        "buildr.cost.inputUsdPerMillion": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Estimated input-token cost in USD per million tokens for the configured model. Local providers default to zero."
+        },
+        "buildr.cost.outputUsdPerMillion": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Estimated output-token cost in USD per million tokens for the configured model. Local providers default to zero."
+        },
         "buildr.permissions.defaultWritePolicy": {
           "type": "string",
           "default": "require_approval",

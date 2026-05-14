@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { BuildrPlan, ExecutionEvent, PendingApproval } from "@buildr/core";
+import type { BuildrPlan, ExecutionEvent, PendingApproval, TokenBudgetState } from "@buildr/core";
 
 export type ApprovalDecision = "approve" | "deny";
 export type BuildrChatMode = "plan" | "agent" | "debug";
@@ -50,6 +50,7 @@ export interface StepPanelState {
   messages: ChatMessage[];
   activePrompt?: string;
   stream?: PlanStreamState;
+  tokenBudget?: TokenBudgetState;
 }
 
 export class StepPanel {
@@ -206,6 +207,7 @@ function renderState(state: StepPanelState): string {
   const pending = state.pendingApproval === undefined ? "" : renderPendingApproval(state.pendingApproval);
   const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
   const stream = renderStream(state.stream);
+  const tokenBudget = renderTokenBudget(state.tokenBudget);
   const canRunPlan = state.plan !== undefined && !state.running && state.pendingApproval === undefined;
   const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
 
@@ -434,6 +436,7 @@ function renderState(state: StepPanelState): string {
       </header>
       <div class="content">
         ${messages}
+        ${tokenBudget}
         ${stream}
         ${plan}
         <section><h2>Execution</h2><ol>${events}</ol></section>
@@ -675,6 +678,26 @@ function renderStream(stream: PlanStreamState | undefined): string {
       <summary>Raw output</summary>
       <pre id="stream-raw">${escapeHtml(raw)}</pre>
     </details>
+  </section>`;
+}
+
+function renderTokenBudget(tokenBudget: TokenBudgetState | undefined): string {
+  if (tokenBudget === undefined) {
+    return "";
+  }
+  const cost = tokenBudget.estimatedCostUsd.toFixed(6);
+  const approximate = tokenBudget.approximate ? " approximate" : "";
+  const warnings = tokenBudget.warnings.length === 0
+    ? ""
+    : `<pre>${escapeHtml(tokenBudget.warnings.map((warning) => warning.message).join("\n"))}</pre>`;
+  const blocked = tokenBudget.blockedReason === undefined
+    ? ""
+    : `<p><strong>Blocked:</strong> ${escapeHtml(tokenBudget.blockedReason)}</p>`;
+  return `<section aria-label="Token budget">
+    <h2>Token Budget</h2>
+    <p>${tokenBudget.totalTokens}/${tokenBudget.hardTokenCap}${escapeHtml(approximate)} tokens · ${tokenBudget.remainingTokens} remaining · $${escapeHtml(cost)} estimated</p>
+    ${blocked}
+    ${warnings}
   </section>`;
 }
 

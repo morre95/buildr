@@ -8,6 +8,7 @@ import type {
   TokenCountInput,
   TokenCountResult
 } from "../types.js";
+import { createProviderError } from "./errors.js";
 
 interface OpenAICompatibleModelList {
   data?: Array<{
@@ -16,6 +17,7 @@ interface OpenAICompatibleModelList {
 }
 
 interface OpenAICompatibleChatChunk {
+  error?: unknown;
   choices?: Array<{
     delta?: {
       content?: string;
@@ -70,13 +72,18 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
     }
 
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, init);
-    if (!response.ok || response.body === null) {
+    if (!response.ok) {
+      const message = extractProviderErrorMessage(await readErrorResponse(response));
+      throw createProviderError(message ?? `LM Studio chat failed with HTTP ${response.status}.`);
+    }
+    if (response.body === null) {
       throw new Error(`LM Studio chat failed with HTTP ${response.status}.`);
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let eventType: string | undefined;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -89,6 +96,14 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
       buffer = lines.pop() ?? "";
       for (const line of lines) {
         const trimmed = line.trim();
+        if (trimmed.length === 0) {
+          eventType = undefined;
+          continue;
+        }
+        if (trimmed.startsWith("event:")) {
+          eventType = trimmed.slice("event:".length).trim();
+          continue;
+        }
         if (!trimmed.startsWith("data:")) {
           continue;
         }
@@ -98,6 +113,13 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
           continue;
         }
         const parsed = JSON.parse(data) as OpenAICompatibleChatChunk;
+        const errorMessage = extractProviderErrorMessage(parsed.error);
+        if (errorMessage !== undefined) {
+          throw createProviderError(errorMessage);
+        }
+        if (eventType === "error") {
+          throw createProviderError(extractProviderErrorMessage(parsed) ?? data);
+        }
         const content = parsed.choices?.[0]?.delta?.content;
         if (content !== undefined) {
           yield { type: "text", content };
@@ -123,4 +145,33 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
       provider: this.provider
     }));
   }
+}
+
+async function readErrorResponse(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (text.trim().length === 0) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
+function extractProviderErrorMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of ["message", "detail", "error"]) {
+    const nested = extractProviderErrorMessage(record[key]);
+    if (nested !== undefined) {
+      return nested;
+    }
+  }
+  return undefined;
 }

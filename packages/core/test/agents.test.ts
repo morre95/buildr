@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   BuildrCore,
+  LM_STUDIO_CONTEXT_SLOT_DIAGNOSTIC,
   MainAgentSession,
+  ProviderError,
   TokenBudgetExceededError,
   TokenBudgetTracker,
   compactAgentContext,
@@ -19,7 +21,7 @@ class MockModelAdapter implements ModelAdapter {
   readonly provider = "ollama";
   requests: ChatRequest[] = [];
 
-  constructor(private readonly responseForPath: (path: string) => string, private readonly tokenCount = 10) {}
+  constructor(private readonly responseForPath: (path: string, request: ChatRequest) => string, private readonly tokenCount = 10) {}
 
   async getCapabilities(): Promise<ModelCapabilities> {
     return {
@@ -38,7 +40,7 @@ class MockModelAdapter implements ModelAdapter {
     this.requests.push(request);
     const user = request.messages.find((message) => message.role === "user")?.content ?? "";
     const path = /File: (.+)/u.exec(user)?.[1] ?? "unknown";
-    yield { type: "text", content: this.responseForPath(path) };
+    yield { type: "text", content: this.responseForPath(path, request) };
     yield { type: "done" };
   }
 
@@ -92,6 +94,101 @@ describe("MainAgentSession", () => {
 
     expect(model.requests).toHaveLength(0);
     expect(tracker.snapshot().blocked).toBe(true);
+  });
+
+  it("keeps sub-agent prompts focused and marks empty targets as new-file work", async () => {
+    const model = new MockModelAdapter((path) => JSON.stringify({
+      summary: `Created ${path}.`,
+      updatedContent: `new ${path}\n`
+    }), 5);
+    const session = new MainAgentSession({
+      core: new BuildrCore({ model }),
+      modelId: "mock",
+      goal: "Split @snake.html into files",
+      contextSummary: "GLOBAL WORKSPACE CONTEXT SHOULD NOT BE SENT TO SUB AGENTS",
+      transcript: [{ role: "user", text: "OLD CHAT SHOULD NOT BE SENT TO SUB AGENTS" }],
+      tasks: [{
+        id: "css",
+        title: "Create CSS",
+        path: "snake.css",
+        currentContent: "",
+        contextSummary: "Source excerpt from snake.html",
+        consultedFiles: ["snake.html"]
+      }],
+      maxParallelSubAgents: 1,
+      tokenBudget: { hardTokenCap: 100 }
+    });
+
+    const report = await session.run();
+    const combinedPrompt = model.requests[0]!.messages.map((message) => message.content).join("\n");
+
+    expect(report.subAgents[0]!.status).toBe("completed");
+    expect(combinedPrompt).toContain("The target file is empty or missing");
+    expect(combinedPrompt).toContain("The target file is empty or does not exist yet");
+    expect(combinedPrompt).toContain("Source excerpt from snake.html");
+    expect(combinedPrompt).toContain("Consulted files:\n- snake.html");
+    expect(combinedPrompt).not.toContain("GLOBAL WORKSPACE CONTEXT SHOULD NOT BE SENT");
+    expect(combinedPrompt).not.toContain("OLD CHAT SHOULD NOT BE SENT");
+    expect(combinedPrompt).not.toContain("Compacted main-agent context");
+  });
+
+  it("retries provider context failures once with compact context", async () => {
+    let calls = 0;
+    const model = new MockModelAdapter((path, request) => {
+      calls += 1;
+      if (calls === 1) {
+        throw new ProviderError("Context size has been exceeded.", "context");
+      }
+      const prompt = request.messages.map((message) => message.content).join("\n");
+      expect(prompt).toContain("Retry mode: use compact context only");
+      return JSON.stringify({
+        summary: `Retried ${path}.`,
+        updatedContent: "updated\n"
+      });
+    }, 5);
+    const session = new MainAgentSession({
+      core: new BuildrCore({ model }),
+      modelId: "mock",
+      goal: "Update files",
+      tasks: [{
+        id: "a",
+        title: "Update A",
+        path: "a.ts",
+        currentContent: "old\n",
+        contextSummary: "x".repeat(4000)
+      }],
+      maxParallelSubAgents: 3,
+      tokenBudget: { hardTokenCap: 100 }
+    });
+
+    const report = await session.run();
+
+    expect(model.requests).toHaveLength(2);
+    expect(report.subAgents[0]!.status).toBe("completed");
+    expect(report.patchProposals).toHaveLength(1);
+    expect(report.warnings.join("\n")).toContain("Retried a serially with compact context");
+  });
+
+  it("keeps real provider error and diagnostics when compact retry fails", async () => {
+    const model = new MockModelAdapter(() => {
+      throw new ProviderError("KV cache is full.", "context");
+    }, 5);
+    const session = new MainAgentSession({
+      core: new BuildrCore({ model }),
+      modelId: "mock",
+      goal: "Update files",
+      tasks: [{ id: "a", title: "Update A", path: "a.ts", currentContent: "old\n" }],
+      maxParallelSubAgents: 2,
+      tokenBudget: { hardTokenCap: 100 }
+    });
+
+    const report = await session.run();
+
+    expect(model.requests).toHaveLength(2);
+    expect(report.subAgents[0]!.status).toBe("failed");
+    expect(report.subAgents[0]!.summary).toBe("KV cache is full.");
+    expect(report.warnings).toContain("KV cache is full.");
+    expect(report.warnings).toContain(LM_STUDIO_CONTEXT_SLOT_DIAGNOSTIC);
   });
 
   it("compacts older chat context and reports omitted content", () => {

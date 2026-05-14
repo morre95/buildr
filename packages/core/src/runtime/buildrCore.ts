@@ -4,6 +4,7 @@ import { LMStudioNativeAdapter } from "../providers/lmStudioNative.js";
 import { LMStudioOpenAIAdapter } from "../providers/lmStudioOpenAI.js";
 import { OllamaAdapter } from "../providers/ollama.js";
 import type { ChatMessage, ModelAdapter, ProviderId } from "../types.js";
+import { providerContextWarnings, providerErrorMessage } from "../providers/errors.js";
 import { TokenBudgetExceededError, type TokenBudgetTracker, type TokenModelCall } from "./tokenBudget.js";
 
 export interface BuildrCoreOptions {
@@ -101,7 +102,10 @@ export class BuildrCore {
         plan: fallback,
         source: "fallback",
         ...(rawResponse.length === 0 ? {} : { rawResponse }),
-        warnings: [`Model plan generation failed; using fallback plan. ${error instanceof Error ? error.message : String(error)}`]
+        warnings: [
+          `Model plan generation failed; using fallback plan. ${providerErrorMessage(error)}`,
+          ...providerContextWarnings(error).filter((warning) => warning !== providerErrorMessage(error))
+        ]
       };
     }
   }
@@ -244,6 +248,9 @@ function createFileRewriteMessages(options: {
       content: [
         `Task: ${options.goal}`,
         `File: ${options.path}`,
+        options.currentContent.trim().length === 0
+          ? "The target file is empty or does not exist yet. Create the complete file contents if the task requires this file."
+          : "The target file exists. Rewrite the complete file contents.",
         "",
         "Relevant workspace context:",
         context,

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { BuildrCore, type ChatRequest, type ModelAdapter, type ModelCapabilities, type ModelDelta, type TokenCountInput, type TokenCountResult } from "../src/index.js";
+import { BuildrCore, LM_STUDIO_CONTEXT_SLOT_DIAGNOSTIC, ProviderError, type ChatRequest, type ModelAdapter, type ModelCapabilities, type ModelDelta, type TokenCountInput, type TokenCountResult } from "../src/index.js";
 
 class MockModelAdapter implements ModelAdapter {
   readonly id = "mock";
   readonly displayName = "Mock";
   readonly provider = "ollama";
 
-  constructor(private readonly response: string | string[], private readonly shouldThrow = false) {}
+  constructor(private readonly response: string | string[], private readonly shouldThrow = false, private readonly error: Error = new Error("offline")) {}
 
   async getCapabilities(): Promise<ModelCapabilities> {
     return {
@@ -23,7 +23,7 @@ class MockModelAdapter implements ModelAdapter {
 
   async *chat(_request: ChatRequest): AsyncIterable<ModelDelta> {
     if (this.shouldThrow) {
-      throw new Error("offline");
+      throw this.error;
     }
     for (const content of Array.isArray(this.response) ? this.response : [this.response]) {
       yield { type: "text", content };
@@ -79,6 +79,18 @@ describe("model-backed Buildr planning", () => {
     expect(result.source).toBe("fallback");
     expect(result.plan.goal).toBe("Add tests");
     expect(result.warnings[0]).toContain("offline");
+  });
+
+  it("adds provider context diagnostics to fallback plan warnings", async () => {
+    const core = new BuildrCore({
+      model: new MockModelAdapter("", true, new ProviderError("Context size has been exceeded.", "context"))
+    });
+
+    const result = await core.createPlanFromModel({ goal: "Add tests", modelId: "mock" });
+
+    expect(result.source).toBe("fallback");
+    expect(result.warnings.join("\n")).toContain("Context size has been exceeded.");
+    expect(result.warnings).toContain(LM_STUDIO_CONTEXT_SLOT_DIAGNOSTIC);
   });
 
   it("reports streamed model deltas while creating a plan", async () => {

@@ -62,6 +62,7 @@ let streamState: PlanStreamState | undefined;
 let planHistory: PlanHistoryEntry[] = [];
 let currentPlanWarnings: string[] = [];
 let tokenBudgetState: TokenBudgetState | undefined;
+let currentPlanMentionedFiles: string[] = [];
 
 interface TerminalApprovalPayload {
   command: string;
@@ -457,6 +458,7 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
   try {
     events = [];
     const resolvedMentions = resolveFileMentions(fileMentions);
+    currentPlanMentionedFiles = resolvedMentions;
     const configuredCore = createConfiguredCore();
     const modelId = getConfiguredModelId();
     const context = await createWorkspaceContextSummary(goal, resolvedMentions);
@@ -717,6 +719,24 @@ function createContextInspectionEvent(context: WorkspaceContextSummary, title: s
     },
     warnings: context.warnings
   };
+}
+
+function createSubAgentSourceContext(context: WorkspaceContextSummary, target: PlanWriteTarget): string {
+  return [
+    `Target assignment: ${target.title}`,
+    `Target file: ${target.path}`,
+    "",
+    "Source and relevant workspace excerpts:",
+    summarizeForSubAgent(context.text)
+  ].join("\n");
+}
+
+function summarizeForSubAgent(text: string): string {
+  const maxChars = 5000;
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, maxChars)}\n...[${text.length - maxChars} chars omitted]`;
 }
 
 function resolveFileMentions(fileMentions: string[]): string[] {
@@ -1143,13 +1163,14 @@ async function queueParallelPlanPatchApprovals(stepPanel: StepPanel): Promise<vo
 async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWriteTarget[], stepPanel: StepPanel): Promise<Array<PendingApproval<TextPatch>>> {
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
-  const context = await createWorkspaceContextSummary(goal);
+  const context = await createWorkspaceContextSummary(goal, currentPlanMentionedFiles);
   const tasks = await Promise.all(targets.map(async (target, index) => ({
     id: `patch_${index + 1}`,
     title: target.title,
     path: target.path,
     currentContent: await readTextFileIfExists(target.path),
-    ...(context.text.length === 0 ? {} : { contextSummary: context.text })
+    ...(context.text.length === 0 ? {} : { contextSummary: createSubAgentSourceContext(context, target) }),
+    ...(context.includedFiles.length === 0 ? {} : { consultedFiles: context.includedFiles })
   })));
   const sessionOptions = {
     core: configuredCore,
@@ -1165,10 +1186,7 @@ async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWri
     },
     ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
   };
-  const session = new MainAgentSession(context.text.length === 0 ? sessionOptions : {
-    ...sessionOptions,
-    contextSummary: context.text
-  });
+  const session = new MainAgentSession(sessionOptions);
   const report = await session.run();
   tokenBudgetState = report.tokenBudget;
   events.push({

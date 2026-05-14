@@ -73,6 +73,14 @@ interface PlanWriteTarget {
   title: string;
 }
 
+interface WorkspaceContextSummary {
+  text: string;
+  includedFiles: string[];
+  indexedFileCount: number;
+  omittedCount: number;
+  warnings: string[];
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const core = new BuildrCore();
   const stepPanel = new StepPanel(context.extensionUri);
@@ -346,6 +354,20 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
     return;
   }
 
+  if (message.mode === "ask") {
+    isRunning = true;
+    renderCurrentState(stepPanel);
+    activeAbortController = new AbortController();
+    try {
+      await answerRepoQuestion(prompt, message.fileMentions, stepPanel);
+    } finally {
+      isRunning = false;
+      activeAbortController = undefined;
+      renderCurrentState(stepPanel);
+    }
+    return;
+  }
+
   const result = await createPlanFromGoal(prompt, message.fileMentions, stepPanel);
   if (message.mode !== "agent" || result === undefined) {
     return;
@@ -433,10 +455,12 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
   renderCurrentState(stepPanel);
 
   try {
+    events = [];
     const resolvedMentions = resolveFileMentions(fileMentions);
     const configuredCore = createConfiguredCore();
     const modelId = getConfiguredModelId();
-    const contextSummary = await createWorkspaceContextSummary(goal, resolvedMentions);
+    const context = await createWorkspaceContextSummary(goal, resolvedMentions);
+    events.push(createContextInspectionEvent(context, "Plan repo context"));
     streamState.status = "Asking model for a plan.";
     renderCurrentState(stepPanel);
     stepPanel.postStreamStart(streamState.status);
@@ -451,9 +475,9 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
         stepPanel.postStreamDelta(content);
       }
     };
-    const result = await configuredCore.createPlanFromModel(contextSummary === undefined ? planOptions : {
+    const result = await configuredCore.createPlanFromModel(context.text.length === 0 ? planOptions : {
       ...planOptions,
-      contextSummary
+      contextSummary: context.text
     });
     if (streamState !== undefined) {
       streamState.active = false;
@@ -462,7 +486,6 @@ async function createPlanFromGoal(goal: string, fileMentions: string[], stepPane
     stepPanel.postStreamComplete(streamState?.status ?? "Planning finished.");
     currentPlan = result.plan;
     currentPlanWarnings = result.warnings;
-    events = [];
     queuedWriteTargets = [];
     pendingApproval = undefined;
     queuedVerificationCommand = undefined;
@@ -546,10 +569,68 @@ async function handleFileSearch(message: FileSearchMessage, stepPanel: StepPanel
   stepPanel.postFileSearchResults(scored);
 }
 
-async function createWorkspaceContextSummary(goal: string, mentionedFiles: string[] = []): Promise<string | undefined> {
+async function answerRepoQuestion(question: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
+  const resolvedMentions = resolveFileMentions(fileMentions);
+  const context = await createWorkspaceContextSummary(question, resolvedMentions);
+  events.push(createContextInspectionEvent(context, "Ask repo context"));
+  renderCurrentState(stepPanel);
+
+  const configuredCore = createConfiguredCore();
+  const modelId = getConfiguredModelId();
+  let answer = "";
+  for await (const delta of configuredCore.model.chat({
+    model: modelId,
+    temperature: 0.1,
+    messages: createAskMessages(question, context)
+  }, activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })) {
+    if (delta.type === "text" && delta.content !== undefined) {
+      answer += delta.content;
+    }
+  }
+
+  const consulted = context.includedFiles.length === 0
+    ? "No repo files were available from the context index."
+    : `Consulted files: ${context.includedFiles.join(", ")}`;
+  messages.push({
+    role: "assistant",
+    text: [answer.trim() || "I could not produce an answer.", "", consulted].join("\n")
+  });
+  renderCurrentState(stepPanel);
+}
+
+function createAskMessages(question: string, context: WorkspaceContextSummary): Array<{ role: "system" | "user"; content: string }> {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are Buildr Ask Mode.",
+        "Answer questions about the user's repository using only the supplied workspace context.",
+        "If the context is insufficient, say what is missing and name the files that would help.",
+        "Do not create a plan, propose patches, or ask for command approval."
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        `Question: ${question}`,
+        "",
+        "Workspace context:",
+        context.text.length === 0 ? "No workspace context was available." : context.text
+      ].join("\n")
+    }
+  ];
+}
+
+async function createWorkspaceContextSummary(goal: string, mentionedFiles: string[] = []): Promise<WorkspaceContextSummary> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (root === undefined) {
-    return undefined;
+    return {
+      text: "",
+      includedFiles: [],
+      indexedFileCount: 0,
+      omittedCount: 0,
+      warnings: ["No workspace folder is open."]
+    };
   }
   try {
     const index = await buildWorkspaceIndex(root);
@@ -564,10 +645,37 @@ async function createWorkspaceContextSummary(goal: string, mentionedFiles: strin
         "User-mentioned files:",
         ...mentioned.map((file) => `- ${file.relativePath}: ${file.summary}`)
       ].join("\n");
-    return [mentionSummary, compressed.text].filter((part) => part.trim().length > 0).join("\n\n");
+    return {
+      text: [mentionSummary, compressed.text].filter((part) => part.trim().length > 0).join("\n\n"),
+      includedFiles: [...new Set([...mentioned.map((file) => file.relativePath), ...compressed.includedFiles])],
+      indexedFileCount: index.files.length,
+      omittedCount: compressed.omittedCount,
+      warnings: []
+    };
   } catch (error) {
-    return `Workspace context indexing failed: ${error instanceof Error ? error.message : String(error)}`;
+    return {
+      text: `Workspace context indexing failed: ${error instanceof Error ? error.message : String(error)}`,
+      includedFiles: [],
+      indexedFileCount: 0,
+      omittedCount: 0,
+      warnings: [`Workspace context indexing failed: ${error instanceof Error ? error.message : String(error)}`]
+    };
   }
+}
+
+function createContextInspectionEvent(context: WorkspaceContextSummary, title: string): ExecutionEvent {
+  const files = context.includedFiles.length === 0 ? "none" : context.includedFiles.join(", ");
+  return {
+    id: `context:${Date.now()}`,
+    title,
+    status: context.warnings.length === 0 ? "completed" : "failed",
+    tool: "workspace_context",
+    summary: `Indexed ${context.indexedFileCount} file(s); consulted ${context.includedFiles.length} file(s); omitted ${context.omittedCount}.`,
+    evidence: {
+      diagnosticsSummary: `Consulted files: ${files}`
+    },
+    warnings: context.warnings
+  };
 }
 
 function resolveFileMentions(fileMentions: string[]): string[] {
@@ -627,6 +735,8 @@ function scoreFileMention(path: string, query: string): number {
 
 function modeLabel(mode: BuildrChatMode): string {
   switch (mode) {
+    case "ask":
+      return "Ask";
     case "agent":
       return "Agent";
     case "debug":
@@ -918,7 +1028,7 @@ async function createPatchApprovalForActiveEditor(goal: string): Promise<Pending
 
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
-  const contextSummary = await createWorkspaceContextSummary(goal);
+  const context = await createWorkspaceContextSummary(goal);
   const rewriteOptions = {
     goal,
     modelId,
@@ -926,9 +1036,9 @@ async function createPatchApprovalForActiveEditor(goal: string): Promise<Pending
     currentContent: before,
     ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
   };
-  const rewrite = await configuredCore.createFileRewriteFromModel(contextSummary === undefined ? rewriteOptions : {
+  const rewrite = await configuredCore.createFileRewriteFromModel(context.text.length === 0 ? rewriteOptions : {
     ...rewriteOptions,
-    contextSummary
+    contextSummary: context.text
   });
   const patch = createTextPatch(editor.document.uri.fsPath, before, rewrite.updatedContent);
 
@@ -983,13 +1093,13 @@ async function queueParallelPlanPatchApprovals(stepPanel: StepPanel): Promise<vo
 async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWriteTarget[], stepPanel: StepPanel): Promise<Array<PendingApproval<TextPatch>>> {
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
-  const contextSummary = await createWorkspaceContextSummary(goal);
+  const context = await createWorkspaceContextSummary(goal);
   const tasks = await Promise.all(targets.map(async (target, index) => ({
     id: `patch_${index + 1}`,
     title: target.title,
     path: target.path,
     currentContent: await readTextFileIfExists(target.path),
-    ...(contextSummary === undefined ? {} : { contextSummary })
+    ...(context.text.length === 0 ? {} : { contextSummary: context.text })
   })));
   const sessionOptions = {
     core: configuredCore,
@@ -1005,9 +1115,9 @@ async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWri
     },
     ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
   };
-  const session = new MainAgentSession(contextSummary === undefined ? sessionOptions : {
+  const session = new MainAgentSession(context.text.length === 0 ? sessionOptions : {
     ...sessionOptions,
-    contextSummary
+    contextSummary: context.text
   });
   const report = await session.run();
   tokenBudgetState = report.tokenBudget;
@@ -1052,7 +1162,7 @@ async function createPatchApprovalForPlanTarget(goal: string, target: PlanWriteT
 
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
-  const contextSummary = await createWorkspaceContextSummary(`${goal}\nCurrent target: ${target.path}`);
+  const context = await createWorkspaceContextSummary(`${goal}\nCurrent target: ${target.path}`);
   const rewriteOptions = {
     goal: `${goal}\n\nImplement this plan step: ${target.title}`,
     modelId,
@@ -1060,9 +1170,9 @@ async function createPatchApprovalForPlanTarget(goal: string, target: PlanWriteT
     currentContent: before,
     ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
   };
-  const rewrite = await configuredCore.createFileRewriteFromModel(contextSummary === undefined ? rewriteOptions : {
+  const rewrite = await configuredCore.createFileRewriteFromModel(context.text.length === 0 ? rewriteOptions : {
     ...rewriteOptions,
-    contextSummary
+    contextSummary: context.text
   });
   const patch = createTextPatch(target.path, before, rewrite.updatedContent);
 

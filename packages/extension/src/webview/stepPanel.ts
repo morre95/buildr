@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { BuildrPlan, ExecutionEvent, PendingApproval, TokenBudgetState } from "@buildr/core";
 
 export type ApprovalDecision = "approve" | "deny";
-export type BuildrChatMode = "plan" | "agent" | "debug";
+export type BuildrChatMode = "ask" | "plan" | "agent" | "debug";
 
 export interface ApprovalMessage {
   id: string;
@@ -446,6 +446,7 @@ function renderState(state: StepPanelState): string {
       <form class="composer" id="composer">
         <div class="toolbar">
           <select id="mode" aria-label="Buildr mode">
+            ${renderModeOption("ask", "Ask", state.mode)}
             ${renderModeOption("plan", "Plan", state.mode)}
             ${renderModeOption("agent", "Agent", state.mode)}
             ${renderModeOption("debug", "Debug", state.mode)}
@@ -750,7 +751,7 @@ function parsePromptMessage(message: unknown): PromptMessage | undefined {
   if (!isRecord(message) || message.type !== "submitPrompt" || typeof message.prompt !== "string") {
     return undefined;
   }
-  if (message.mode !== "plan" && message.mode !== "agent" && message.mode !== "debug") {
+  if (message.mode !== "ask" && message.mode !== "plan" && message.mode !== "agent" && message.mode !== "debug") {
     return undefined;
   }
   return {

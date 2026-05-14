@@ -477,7 +477,9 @@ function renderState(state: StepPanelState): string {
         });
       });
 
-      document.getElementById("composer").addEventListener("submit", (event) => {
+      const composer = document.getElementById("composer");
+
+      composer.addEventListener("submit", (event) => {
         event.preventDefault();
         const value = prompt.value.trim();
         if (value.length === 0) {
@@ -517,10 +519,14 @@ function renderState(state: StepPanelState): string {
       });
 
       prompt.addEventListener("keydown", (event) => {
-        if (event.key !== "Escape") {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          composer.requestSubmit();
           return;
         }
-        suggestions.hidden = true;
+        if (event.key === "Escape") {
+          suggestions.hidden = true;
+        }
       });
 
       window.addEventListener("message", (event) => {

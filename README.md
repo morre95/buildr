@@ -46,6 +46,10 @@ Buildr agent mode can launch parallel sub-agents from the main agent session. Su
 
    ```bash
    pnpm build
+   # create extenbionb file
+   pnpm --filter buildr-vscode package
+   # Run extention
+   code --install-extension path/to/your-extension.vsix 
    ```
 
 2. Open the Buildr extension in VS Code.

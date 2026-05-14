@@ -22,6 +22,9 @@ export interface ModelCapabilities {
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  toolCalls?: ToolCall[];
+  toolCallId?: string;
+  name?: string;
 }
 
 export interface ChatRequest {

@@ -5,6 +5,8 @@ import type {
   ModelCapabilities,
   ModelDelta,
   ModelInfo,
+  ToolCall,
+  ToolDefinition,
   TokenCountInput,
   TokenCountResult
 } from "../types.js";
@@ -18,6 +20,12 @@ interface OllamaTagsResponse {
 interface OllamaChatLine {
   message?: {
     content?: string;
+    tool_calls?: Array<{
+      function?: {
+        name?: string;
+        arguments?: Record<string, unknown> | string;
+      };
+    }>;
   };
   done?: boolean;
 }
@@ -59,12 +67,12 @@ export class OllamaAdapter implements ModelAdapter {
       },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: request.messages.map(toOllamaMessage),
         stream: true,
         options: {
           temperature: request.temperature ?? 0.1
         },
-        tools: request.tools
+        tools: request.tools?.map(toOllamaToolDefinition)
       })
     };
     if (options.signal !== undefined) {
@@ -100,6 +108,12 @@ export class OllamaAdapter implements ModelAdapter {
         if (parsed.message?.content) {
           yield { type: "text", content: parsed.message.content };
         }
+        for (const toolCall of parsed.message?.tool_calls ?? []) {
+          const normalized = parseOllamaToolCall(toolCall);
+          if (normalized !== undefined) {
+            yield { type: "tool_call", toolCall: normalized };
+          }
+        }
         if (parsed.done) {
           yield { type: "done" };
         }
@@ -128,4 +142,65 @@ export class OllamaAdapter implements ModelAdapter {
       provider: this.provider
     }));
   }
+}
+
+function toOllamaToolDefinition(tool: ToolDefinition): Record<string, unknown> {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema
+    }
+  };
+}
+
+function toOllamaMessage(message: ChatRequest["messages"][number]): Record<string, unknown> {
+  if (message.role === "assistant" && message.toolCalls !== undefined) {
+    return {
+      role: "assistant",
+      content: message.content,
+      tool_calls: message.toolCalls.map((toolCall) => ({
+        function: {
+          name: toolCall.name,
+          arguments: toolCall.arguments
+        }
+      }))
+    };
+  }
+  if (message.role === "tool") {
+    return {
+      role: "tool",
+      content: message.content,
+      name: message.name
+    };
+  }
+  return {
+    role: message.role,
+    content: message.content
+  };
+}
+
+function parseOllamaToolCall(toolCall: { function?: { name?: string; arguments?: Record<string, unknown> | string } }): ToolCall | undefined {
+  const name = toolCall.function?.name;
+  if (name === undefined || name.trim().length === 0) {
+    return undefined;
+  }
+  const rawArgs = toolCall.function?.arguments;
+  let args: Record<string, unknown> = {};
+  if (typeof rawArgs === "string" && rawArgs.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(rawArgs) as unknown;
+      args = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      args = {};
+    }
+  } else if (typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)) {
+    args = rawArgs;
+  }
+  return {
+    id: `tool:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    name,
+    arguments: args
+  };
 }

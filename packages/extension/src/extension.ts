@@ -1,26 +1,33 @@
 import {
   applyTextPatch,
   buildWorkspaceIndex,
+  builtInTools,
   BuildrCore,
   checkScopeFidelity,
   compressRankedContext,
   createFinalSummary,
   createTextPatch,
   eventFromPermissionDecision,
+  eventFromToolResult,
   loadBuiltInRulePacks,
   MainAgentSession,
+  readFileTool,
   rankWorkspaceContext,
   requireTrustedWorkspace,
   runCompletionGate,
   runVerificationCommand,
   searchCodebaseTool,
   type BuildrPlan,
+  type ChatMessage as CoreChatMessage,
   type ExecutionEvent,
   type ModelAdapter,
   type ModelInfo,
   type PendingApproval,
   type ProviderId,
   type TextPatch,
+  type ToolCall,
+  type ToolDefinition,
+  type ToolResult,
   type TokenBudgetConfig,
   type TokenBudgetState
 } from "@buildr/core";
@@ -608,7 +615,7 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
     renderCurrentState(stepPanel);
     activeAbortController = new AbortController();
     try {
-      await answerRepoQuestion(prompt, message.fileMentions, stepPanel);
+      await answerGeneralQuestion(prompt, message.fileMentions, stepPanel);
     } finally {
       isRunning = false;
       activeAbortController = undefined;
@@ -820,56 +827,214 @@ async function handleFileSearch(message: FileSearchMessage, stepPanel: StepPanel
   stepPanel.postFileSearchResults(scored);
 }
 
-async function answerRepoQuestion(question: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
+async function answerGeneralQuestion(question: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
   const resolvedMentions = resolveFileMentions(fileMentions);
-  const context = await createWorkspaceContextSummary(question, resolvedMentions);
-  events.push(createContextInspectionEvent(context, "Ask repo context"));
-  renderCurrentState(stepPanel);
-
+  const mentionContext = await createAskMentionContext(resolvedMentions);
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
+  const askTools = getAskTools();
+  const modelMessages: CoreChatMessage[] = createAskMessages(question, mentionContext);
+  const consulted = new Set<string>(resolvedMentions);
   let answer = "";
-  for await (const delta of configuredCore.model.chat({
-    model: modelId,
-    temperature: 0.1,
-    messages: createAskMessages(question, context)
-  }, activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })) {
-    if (delta.type === "text" && delta.content !== undefined) {
-      answer += delta.content;
+
+  for (let round = 0; round < 4; round += 1) {
+    let roundText = "";
+    const toolCalls: ToolCall[] = [];
+    for await (const delta of configuredCore.model.chat({
+      model: modelId,
+      temperature: 0.2,
+      messages: modelMessages,
+      tools: askTools
+    }, activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })) {
+      if (delta.type === "text" && delta.content !== undefined) {
+        roundText += delta.content;
+      }
+      if (delta.type === "tool_call" && delta.toolCall !== undefined) {
+        toolCalls.push(delta.toolCall);
+      }
     }
+
+    if (toolCalls.length === 0) {
+      answer = roundText.trim();
+      break;
+    }
+
+    modelMessages.push({
+      role: "assistant",
+      content: roundText,
+      toolCalls
+    });
+    for (const toolCall of toolCalls) {
+      const result = await runAskTool(toolCall);
+      events.push(eventFromToolResult(
+        `ask:${toolCall.name}:${Date.now()}`,
+        `Ask tool: ${toolCall.name}`,
+        toolCall.name,
+        result,
+        result.provenance[0]?.source
+      ));
+      for (const provenance of result.provenance) {
+        if (provenance.kind === "file") {
+          consulted.add(provenance.source);
+        }
+      }
+      modelMessages.push({
+        role: "tool",
+        name: toolCall.name,
+        toolCallId: toolCall.id,
+        content: JSON.stringify(result)
+      });
+    }
+    renderCurrentState(stepPanel);
   }
 
-  const consulted = context.includedFiles.length === 0
-    ? "No repo files were available from the context index."
-    : `Consulted files: ${context.includedFiles.join(", ")}`;
+  if (answer.length === 0) {
+    events.push({
+      id: `ask:tool-limit:${Date.now()}`,
+      title: "Ask tool limit reached",
+      status: "blocked",
+      tool: "ask",
+      summary: "Ask mode stopped after reaching the read-only tool call limit.",
+      warnings: ["The model did not produce a final answer after tool use."]
+    });
+    answer = "I stopped after reaching the read-only tool call limit before a final answer was produced.";
+  }
+
+  const consultedNote = consulted.size === 0
+    ? ""
+    : `\n\nConsulted repo files/tools: ${Array.from(consulted).join(", ")}`;
   messages.push({
     role: "assistant",
-    text: [answer.trim() || "I could not produce an answer.", "", consulted].join("\n")
+    text: `${answer || "I could not produce an answer."}${consultedNote}`
   });
   renderCurrentState(stepPanel);
 }
 
-function createAskMessages(question: string, context: WorkspaceContextSummary): Array<{ role: "system" | "user"; content: string }> {
+function createAskMessages(question: string, mentionContext: string): CoreChatMessage[] {
   return [
     {
       role: "system",
       content: [
         "You are Buildr Ask Mode.",
-        "Answer questions about the user's repository using only the supplied workspace context.",
-        "If the context is insufficient, say what is missing and name the files that would help.",
-        "Do not create a plan, propose patches, or ask for command approval."
+        "Answer general questions directly. Do not assume the user is asking about this repository unless they say so.",
+        "When repository context is needed, use the available read-only tools instead of guessing.",
+        "Do not create plans, propose patches, edit files, or run terminal commands in Ask Mode."
       ].join("\n")
     },
     {
       role: "user",
-      content: [
-        `Question: ${question}`,
-        "",
-        "Workspace context:",
-        context.text.length === 0 ? "No workspace context was available." : context.text
-      ].join("\n")
+      content: mentionContext.length === 0
+        ? question
+        : [question, "", "User-mentioned repo file excerpts:", mentionContext].join("\n")
     }
   ];
+}
+
+async function createAskMentionContext(mentionedFiles: string[]): Promise<string> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined || mentionedFiles.length === 0) {
+    return "";
+  }
+  const excerpts: string[] = [];
+  for (const relativePath of mentionedFiles) {
+    const absolute = resolve(root, relativePath);
+    if (!isWorkspaceRelativePath(root, absolute)) {
+      continue;
+    }
+    const content = await readTextFileIfExists(absolute);
+    if (content.length > 0) {
+      excerpts.push(`- ${relativePath}:\n${summarizeMentionedFile(content)}`);
+    }
+  }
+  return excerpts.join("\n\n");
+}
+
+function getAskTools(): ToolDefinition[] {
+  return builtInTools.filter((tool) => tool.name === "read_file" || tool.name === "search_codebase" || tool.name === "read_diagnostics");
+}
+
+async function runAskTool(toolCall: ToolCall): Promise<ToolResult> {
+  const tool = getAskTools().find((candidate) => candidate.name === toolCall.name);
+  if (tool === undefined) {
+    return failedToolResult(`Ask Mode cannot use tool "${toolCall.name}".`, toolCall.name);
+  }
+  const target = askToolTarget(toolCall);
+  const decision = createConfiguredCore().permissions.decide(target === undefined ? { tool } : { tool, target });
+  if (decision === "deny" || decision === "ask") {
+    return failedToolResult(`Ask Mode blocked ${toolCall.name}; this mode only auto-runs safe read-only tools.`, toolCall.name);
+  }
+  try {
+    switch (toolCall.name) {
+      case "read_file":
+        return await runAskReadFileTool(toolCall);
+      case "search_codebase":
+        return await runAskSearchTool(toolCall);
+      case "read_diagnostics":
+        return runAskDiagnosticsTool();
+      default:
+        return failedToolResult(`Ask Mode cannot use tool "${toolCall.name}".`, toolCall.name);
+    }
+  } catch (error) {
+    return failedToolResult(error instanceof Error ? error.message : String(error), toolCall.name);
+  }
+}
+
+async function runAskReadFileTool(toolCall: ToolCall): Promise<ToolResult> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const rawPath = typeof toolCall.arguments.path === "string" ? toolCall.arguments.path : "";
+  if (root === undefined) {
+    return failedToolResult("No workspace folder is open.", "read_file");
+  }
+  if (rawPath.trim().length === 0) {
+    return failedToolResult("read_file requires a path.", "read_file");
+  }
+  const absolute = resolve(root, normalizeWorkspacePath(rawPath));
+  if (!isWorkspaceRelativePath(root, absolute)) {
+    return failedToolResult(`Blocked reading outside the workspace: ${rawPath}`, "read_file");
+  }
+  return readFileTool(absolute);
+}
+
+async function runAskSearchTool(toolCall: ToolCall): Promise<ToolResult> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const query = typeof toolCall.arguments.query === "string" ? toolCall.arguments.query : "";
+  if (root === undefined) {
+    return failedToolResult("No workspace folder is open.", "search_codebase");
+  }
+  if (query.trim().length === 0) {
+    return failedToolResult("search_codebase requires a query.", "search_codebase");
+  }
+  return searchCodebaseTool(root, query);
+}
+
+function runAskDiagnosticsTool(): ToolResult<{ diagnostics: string }> {
+  const diagnostics = readDiagnosticsSummary();
+  return {
+    ok: true,
+    summary: diagnostics.message,
+    data: { diagnostics: diagnostics.message },
+    warnings: [],
+    provenance: [{ kind: "diagnostic", source: "vscode.problems" }]
+  };
+}
+
+function askToolTarget(toolCall: ToolCall): string | undefined {
+  if (toolCall.name === "read_file" && typeof toolCall.arguments.path === "string") {
+    return toolCall.arguments.path;
+  }
+  if (toolCall.name === "search_codebase" && typeof toolCall.arguments.query === "string") {
+    return toolCall.arguments.query;
+  }
+  return undefined;
+}
+
+function failedToolResult(summary: string, source: string): ToolResult {
+  return {
+    ok: false,
+    summary,
+    warnings: [summary],
+    provenance: [{ kind: "generated", source }]
+  };
 }
 
 async function createWorkspaceContextSummary(goal: string, mentionedFiles: string[] = []): Promise<WorkspaceContextSummary> {

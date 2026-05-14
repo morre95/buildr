@@ -32,6 +32,24 @@ describe("LMStudioOpenAIAdapter", () => {
     await expect(collect(adapter)).rejects.toThrow("Context size has been exceeded.");
   });
 
+  it("emits streamed tool call chunks", async () => {
+    stubStream([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file", arguments: "{\"path\":" } }] }, finish_reason: null }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"README.md\"}" } }] }, finish_reason: "tool_calls" }] })}\n\n`,
+      "data: [DONE]\n\n"
+    ]);
+    const adapter = new LMStudioOpenAIAdapter();
+
+    const toolCalls = [];
+    for await (const delta of adapter.chat({ model: "local", messages: [], tools: [{ name: "read_file", description: "Read file", inputSchema: { type: "object" }, permission: "auto_allow" }] })) {
+      if (delta.type === "tool_call") {
+        toolCalls.push(delta.toolCall);
+      }
+    }
+
+    expect(toolCalls).toEqual([{ id: "call_1", name: "read_file", arguments: { path: "README.md" } }]);
+  });
+
   it("throws non-stream HTTP error payload messages", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       error: { message: "Context size has been exceeded." }

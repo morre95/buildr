@@ -5,6 +5,8 @@ import type {
   ModelCapabilities,
   ModelDelta,
   ModelInfo,
+  ToolCall,
+  ToolDefinition,
   TokenCountInput,
   TokenCountResult
 } from "../types.js";
@@ -21,9 +23,19 @@ interface OpenAICompatibleChatChunk {
   choices?: Array<{
     delta?: {
       content?: string;
+      tool_calls?: OpenAICompatibleToolCallChunk[];
     };
     finish_reason?: string | null;
   }>;
+}
+
+interface OpenAICompatibleToolCallChunk {
+  index?: number;
+  id?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
 }
 
 export interface LMStudioOpenAIAdapterOptions {
@@ -61,10 +73,10 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         model: request.model,
-        messages: request.messages,
+        messages: request.messages.map(toOpenAIMessage),
         stream: true,
         temperature: request.temperature ?? 0.1,
-        tools: request.tools
+        tools: request.tools?.map(toOpenAIToolDefinition)
       })
     };
     if (options.signal !== undefined) {
@@ -84,6 +96,7 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
     const decoder = new TextDecoder();
     let buffer = "";
     let eventType: string | undefined;
+    const toolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
 
     while (true) {
       const { done, value } = await reader.read();
@@ -124,6 +137,28 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
         if (content !== undefined) {
           yield { type: "text", content };
         }
+        const deltas = parsed.choices?.[0]?.delta?.tool_calls ?? [];
+        for (const toolCall of deltas) {
+          const index = toolCall.index ?? toolCalls.size;
+          const existing = toolCalls.get(index) ?? { arguments: "" };
+          const id = toolCall.id ?? existing.id;
+          const name = toolCall.function?.name ?? existing.name;
+          const next = {
+            arguments: existing.arguments + (toolCall.function?.arguments ?? ""),
+            ...(id === undefined ? {} : { id }),
+            ...(name === undefined ? {} : { name })
+          };
+          toolCalls.set(index, next);
+        }
+        if (parsed.choices?.[0]?.finish_reason === "tool_calls") {
+          for (const toolCall of toolCalls.values()) {
+            const normalized = parseToolCall(toolCall);
+            if (normalized !== undefined) {
+              yield { type: "tool_call", toolCall: normalized };
+            }
+          }
+          toolCalls.clear();
+        }
       }
     }
   }
@@ -145,6 +180,66 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
       provider: this.provider
     }));
   }
+}
+
+function toOpenAIToolDefinition(tool: ToolDefinition): Record<string, unknown> {
+  return {
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema
+    }
+  };
+}
+
+function toOpenAIMessage(message: ChatRequest["messages"][number]): Record<string, unknown> {
+  if (message.role === "assistant" && message.toolCalls !== undefined) {
+    return {
+      role: "assistant",
+      content: message.content,
+      tool_calls: message.toolCalls.map((toolCall) => ({
+        id: toolCall.id,
+        type: "function",
+        function: {
+          name: toolCall.name,
+          arguments: JSON.stringify(toolCall.arguments)
+        }
+      }))
+    };
+  }
+  if (message.role === "tool") {
+    return {
+      role: "tool",
+      content: message.content,
+      tool_call_id: message.toolCallId,
+      name: message.name
+    };
+  }
+  return {
+    role: message.role,
+    content: message.content
+  };
+}
+
+function parseToolCall(toolCall: { id?: string; name?: string; arguments: string }): ToolCall | undefined {
+  if (toolCall.name === undefined || toolCall.name.trim().length === 0) {
+    return undefined;
+  }
+  let args: Record<string, unknown> = {};
+  if (toolCall.arguments.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(toolCall.arguments) as unknown;
+      args = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      args = {};
+    }
+  }
+  return {
+    id: toolCall.id ?? `tool:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    name: toolCall.name,
+    arguments: args
+  };
 }
 
 async function readErrorResponse(response: Response): Promise<unknown> {

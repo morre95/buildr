@@ -628,6 +628,7 @@ function renderState(state: StepPanelState): string {
       const newSession = document.getElementById("new-session");
       const deleteSession = document.getElementById("delete-session");
       let activeMention = undefined;
+      scrollContentToLatest();
 
       document.querySelectorAll("[data-approval]").forEach((button) => {
         button.addEventListener("click", () => {
@@ -718,14 +719,17 @@ function renderState(state: StepPanelState): string {
         if (event.data?.type === "streamStart") {
           setStreamStatus(event.data.status ?? "Planning started.");
           setStreamRaw("");
+          scrollContentToLatest();
           return;
         }
         if (event.data?.type === "streamDelta") {
           appendStreamRaw(event.data.content ?? "");
+          scrollContentToLatest();
           return;
         }
         if (event.data?.type === "streamComplete" || event.data?.type === "streamError") {
           setStreamStatus(event.data.status ?? "Planning finished.");
+          scrollContentToLatest();
           return;
         }
         if (event.data?.type === "editPrompt") {
@@ -747,6 +751,7 @@ function renderState(state: StepPanelState): string {
         const rawElement = document.getElementById("stream-raw");
         if (rawElement !== null) {
           rawElement.textContent = raw;
+          rawElement.scrollTop = rawElement.scrollHeight;
         }
       }
 
@@ -754,7 +759,17 @@ function renderState(state: StepPanelState): string {
         const rawElement = document.getElementById("stream-raw");
         if (rawElement !== null) {
           rawElement.textContent += content;
+          rawElement.scrollTop = rawElement.scrollHeight;
         }
+      }
+
+      function scrollContentToLatest() {
+        requestAnimationFrame(() => {
+          const content = document.querySelector(".content");
+          if (content !== null) {
+            content.scrollTop = content.scrollHeight;
+          }
+        });
       }
 
       function renderSuggestions(results) {

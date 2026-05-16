@@ -58,8 +58,23 @@ export interface StepPanelState {
   activePrompt?: string;
   stream?: PlanStreamState;
   tokenBudget?: TokenBudgetState;
+  agentPipeline?: WebviewAgentPipelineState;
   activeSessionId?: string;
   sessions?: SavedAgentSessionSummary[];
+}
+
+export interface WebviewAgentPipelineState {
+  phase: string;
+  currentTaskIndex: number;
+  plan?: {
+    summary: string;
+    tasks: Array<{ id: string; title: string }>;
+  };
+  coderResults: Array<{ taskId: string; attempt: number; formattedDiff: string }>;
+  reviewResults: Array<{ taskId: string; status: string; issues: string[] }>;
+  testCases: Array<{ id: string; title: string; command: string }>;
+  finalSummary?: string;
+  warnings: string[];
 }
 
 export class StepPanel {
@@ -262,6 +277,7 @@ function renderState(state: StepPanelState): string {
   const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
   const stream = renderStream(state.stream);
   const tokenBudget = renderTokenBudget(state.tokenBudget);
+  const agentPipeline = renderAgentPipeline(state.agentPipeline);
   const canRunPlan = state.plan !== undefined && !state.running && state.pendingApproval === undefined;
   const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
   const sessions = renderSessionControls(state.sessions ?? [], state.activeSessionId);
@@ -374,6 +390,51 @@ function renderState(state: StepPanelState): string {
         background: var(--vscode-textCodeBlock-background);
         border-radius: 4px;
         white-space: pre-wrap;
+      }
+
+      .diff {
+        overflow: auto;
+        max-height: 420px;
+        border: 1px solid var(--vscode-panel-border);
+        border-radius: 4px;
+        background: var(--vscode-textCodeBlock-background);
+        font-family: var(--vscode-editor-font-family, monospace);
+        font-size: var(--vscode-editor-font-size);
+      }
+
+      .diff-line {
+        display: grid;
+        grid-template-columns: 44px 44px minmax(0, 1fr);
+        min-width: max-content;
+        white-space: pre;
+      }
+
+      .diff-line span {
+        padding: 1px 8px;
+      }
+
+      .diff-old, .diff-new {
+        color: var(--vscode-descriptionForeground);
+        text-align: right;
+        user-select: none;
+        border-right: 1px solid var(--vscode-panel-border);
+      }
+
+      .diff-add {
+        background: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground) 18%, transparent);
+      }
+
+      .diff-remove {
+        background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground) 18%, transparent);
+      }
+
+      .diff-header .diff-code {
+        color: var(--vscode-symbolIcon-keywordForeground);
+        font-weight: 600;
+      }
+
+      .diff-hunk .diff-code {
+        color: var(--vscode-editorLineNumber-activeForeground);
       }
 
       .composer {
@@ -508,6 +569,7 @@ function renderState(state: StepPanelState): string {
       <div class="content">
         ${messages}
         ${tokenBudget}
+        ${agentPipeline}
         ${stream}
         ${plan}
         <section><h2>Execution</h2><ol>${events}</ol></section>
@@ -817,13 +879,41 @@ function renderTokenBudget(tokenBudget: TokenBudgetState | undefined): string {
   </section>`;
 }
 
+function renderAgentPipeline(agentPipeline: WebviewAgentPipelineState | undefined): string {
+  if (agentPipeline === undefined) {
+    return "";
+  }
+  const taskCount = agentPipeline.plan?.tasks.length ?? 0;
+  const diffs = agentPipeline.coderResults
+    .filter((result) => result.formattedDiff.trim().length > 0)
+    .map((result) => `<details class="stream-output"><summary>${escapeHtml(result.taskId)} diff, attempt ${result.attempt}</summary>${renderDiff(result.formattedDiff)}</details>`)
+    .join("");
+  const reviews = agentPipeline.reviewResults.length === 0
+    ? ""
+    : `<p><small>Reviews: ${escapeHtml(agentPipeline.reviewResults.map((review) => `${review.taskId}: ${review.status}`).join("; "))}</small></p>`;
+  const tests = agentPipeline.testCases.length === 0
+    ? ""
+    : `<p><small>Tests: ${escapeHtml(agentPipeline.testCases.map((test) => `${test.title}: ${test.command}`).join("; "))}</small></p>`;
+  const warnings = agentPipeline.warnings.length === 0
+    ? ""
+    : `<pre>${escapeHtml(agentPipeline.warnings.join("\n"))}</pre>`;
+  return `<section aria-label="Agent pipeline">
+    <h2>Agent Pipeline</h2>
+    <p>Phase: ${escapeHtml(agentPipeline.phase)} · Task ${agentPipeline.currentTaskIndex + 1}/${taskCount}</p>
+    ${reviews}
+    ${tests}
+    ${diffs}
+    ${warnings}
+  </section>`;
+}
+
 function renderPendingApproval(approval: PendingApproval): string {
   return `<section aria-label="Pending approval">
     <h2>Pending Approval</h2>
     <p><strong>${escapeHtml(approval.title)}</strong></p>
     <p>Tool: ${escapeHtml(approval.tool)}</p>
     <p>Target: ${escapeHtml(approval.target ?? "n/a")}</p>
-    <pre>${escapeHtml(approval.details)}</pre>
+    ${renderDetails(approval.details)}
     <button type="button" data-approval="approve" data-approval-id="${escapeHtml(approval.id)}">Approve Once</button>
     <button type="button" class="secondary" data-approval="deny" data-approval-id="${escapeHtml(approval.id)}">Deny</button>
   </section>`;
@@ -846,7 +936,56 @@ function renderEvidence(event: ExecutionEvent): string {
     ...event.warnings.map((warning) => `Warning: ${warning}`)
   ].filter((row) => row.length > 0);
 
-  return `<pre>${escapeHtml(rows.join("\n\n"))}</pre>`;
+  return renderDetails(rows.join("\n\n"));
+}
+
+function renderDetails(details: string): string {
+  const diffStart = details.indexOf("diff --git ");
+  if (diffStart < 0) {
+    return `<pre>${escapeHtml(details)}</pre>`;
+  }
+  const before = details.slice(0, diffStart).trim();
+  const diff = details.slice(diffStart);
+  return `${before.length === 0 ? "" : `<pre>${escapeHtml(before)}</pre>`}${renderDiff(diff)}`;
+}
+
+function renderDiff(diff: string): string {
+  let oldLine: number | undefined;
+  let newLine: number | undefined;
+  const rows = diff.split("\n").map((line) => {
+    const hunk = /^@@ -(\d+),?\d* \+(\d+),?\d* @@/u.exec(line);
+    if (hunk !== null) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      return renderDiffLine("diff-hunk", "", "", line);
+    }
+    if (line.startsWith("diff --git ") || line.startsWith("index ") || line.startsWith("--- ") || line.startsWith("+++ ")) {
+      return renderDiffLine("diff-header", "", "", line);
+    }
+    if (line.startsWith("+")) {
+      const rendered = renderDiffLine("diff-add", "", newLine === undefined ? "" : String(newLine), line);
+      newLine = newLine === undefined ? undefined : newLine + 1;
+      return rendered;
+    }
+    if (line.startsWith("-")) {
+      const rendered = renderDiffLine("diff-remove", oldLine === undefined ? "" : String(oldLine), "", line);
+      oldLine = oldLine === undefined ? undefined : oldLine + 1;
+      return rendered;
+    }
+    const rendered = renderDiffLine("", oldLine === undefined ? "" : String(oldLine), newLine === undefined ? "" : String(newLine), line);
+    oldLine = oldLine === undefined ? undefined : oldLine + 1;
+    newLine = newLine === undefined ? undefined : newLine + 1;
+    return rendered;
+  }).join("");
+  return `<div class="diff">${rows}</div>`;
+}
+
+function renderDiffLine(className: string, oldLine: string, newLine: string, code: string): string {
+  return `<div class="diff-line ${className}">
+    <span class="diff-old">${escapeHtml(oldLine)}</span>
+    <span class="diff-new">${escapeHtml(newLine)}</span>
+    <span class="diff-code">${escapeHtml(code)}</span>
+  </div>`;
 }
 
 function parseApprovalMessage(message: unknown): ApprovalMessage | undefined {

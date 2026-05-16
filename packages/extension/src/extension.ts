@@ -1,22 +1,41 @@
 import {
   applyTextPatch,
+  createArchitectMessages,
+  createCoderMessages,
   buildWorkspaceIndex,
   builtInTools,
   BuildrCore,
   checkScopeFidelity,
   compressRankedContext,
+  createReviewerMessages,
+  createTesterMessages,
   createFinalSummary,
   createTextPatch,
+  createTextPatchFromAgentDiff,
   eventFromPermissionDecision,
   eventFromToolResult,
+  formatTextPatchAsGitDiff,
+  hashText,
   loadBuiltInRulePacks,
   MainAgentSession,
+  parseAgentEnvelope,
   readFileTool,
   rankWorkspaceContext,
   requireTrustedWorkspace,
   runCompletionGate,
   runVerificationCommand,
   searchCodebaseTool,
+  validateArchitectOutput,
+  validateCoderOutput,
+  validateReviewerOutput,
+  validateTesterOutput,
+  type AgentFileSnapshot,
+  type AgentJsonEnvelope,
+  type AgentPlan,
+  type AgentPlanTask,
+  type AgentRole,
+  type AgentTestCase,
+  type CoderOutput,
   type BuildrPlan,
   type ChatMessage as CoreChatMessage,
   type ExecutionEvent,
@@ -25,6 +44,7 @@ import {
   type PendingApproval,
   type ProviderId,
   type TextPatch,
+  type TestRunObservation,
   type ToolCall,
   type ToolDefinition,
   type ToolResult,
@@ -41,7 +61,7 @@ import { readDiagnosticsSummary } from "./native/diagnostics.js";
 import { registerBuildrLanguageModelTools } from "./native/languageModelTools.js";
 import { showMcpDoctor, showMcpList } from "./native/mcpCommands.js";
 import { openBuildrSettings } from "./native/settings.js";
-import { findTaskCommand } from "./native/tasks.js";
+import { findTaskCommand, runCommandAsVscodeTask } from "./native/tasks.js";
 import {
   type ApprovalMessage,
   type BuildrChatMode,
@@ -78,10 +98,12 @@ let finalSummaryState: string | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let activeSessionId = "";
 let savedAgentSessions: PersistedAgentSession[] = [];
+let agentPipelineState: AgentPipelineState | undefined;
 
 interface TerminalApprovalPayload {
   command: string;
   cwd: string;
+  agentTestCaseId?: string;
 }
 
 interface PlanWriteTarget {
@@ -95,6 +117,37 @@ interface WorkspaceContextSummary {
   indexedFileCount: number;
   omittedCount: number;
   warnings: string[];
+}
+
+type AgentPipelinePhase = "idle" | "planning" | "coding" | "reviewing" | "testing" | "complete" | "failed";
+
+interface AgentPipelineState {
+  phase: AgentPipelinePhase;
+  rawTask: string;
+  workspaceTree: string[];
+  plan?: AgentPlan;
+  currentTaskIndex: number;
+  coderResults: AgentCoderPipelineResult[];
+  reviewResults: AgentReviewPipelineResult[];
+  testCases: AgentTestCase[];
+  testObservations: TestRunObservation[];
+  retryCount: Record<string, number>;
+  finalSummary?: string;
+  warnings: string[];
+}
+
+interface AgentCoderPipelineResult {
+  taskId: string;
+  attempt: number;
+  output: CoderOutput;
+  patches: TextPatch[];
+  formattedDiff: string;
+}
+
+interface AgentReviewPipelineResult {
+  taskId: string;
+  status: "approved" | "changes_needed";
+  issues: string[];
 }
 
 interface PersistedAgentSession {
@@ -122,6 +175,7 @@ interface PersistedAgentSessionState {
   tokenBudgetState?: TokenBudgetState;
   currentPlanMentionedFiles: string[];
   finalSummary?: string;
+  agentPipelineState?: AgentPipelineState;
 }
 
 function loadSavedAgentSessions(context: vscode.ExtensionContext): PersistedAgentSession[] {
@@ -236,6 +290,7 @@ function restoreAgentSession(session: PersistedAgentSession): void {
   tokenBudgetState = session.state.tokenBudgetState;
   currentPlanMentionedFiles = [...session.state.currentPlanMentionedFiles];
   finalSummaryState = session.state.finalSummary;
+  agentPipelineState = session.state.agentPipelineState;
   activeAbortController = undefined;
 }
 
@@ -258,6 +313,7 @@ function resetAgentState(): void {
   tokenBudgetState = undefined;
   currentPlanMentionedFiles = [];
   finalSummaryState = undefined;
+  agentPipelineState = undefined;
 }
 
 function snapshotAgentState(): PersistedAgentSessionState {
@@ -272,6 +328,7 @@ function snapshotAgentState(): PersistedAgentSessionState {
     planHistory,
     currentPlanWarnings,
     currentPlanMentionedFiles,
+    ...(agentPipelineState === undefined ? {} : { agentPipelineState }),
     ...(currentPlan === undefined ? {} : { currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
     ...(queuedVerificationCommand === undefined ? {} : { queuedVerificationCommand }),
@@ -398,7 +455,7 @@ export function activate(context: vscode.ExtensionContext): void {
       renderCurrentState(stepPanel);
       activeAbortController = new AbortController();
       try {
-        await runPhase1A(stepPanel);
+        await runDeterministicAgentWorkflowFromCurrentPlan(stepPanel);
       } finally {
         isRunning = false;
         renderCurrentState(stepPanel);
@@ -624,32 +681,33 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
     return;
   }
 
-  const result = await createPlanFromGoal(prompt, message.fileMentions, stepPanel);
-  if (message.mode !== "agent" || result === undefined) {
+  if (message.mode === "agent") {
+    try {
+      requireTrustedWorkspace(vscode.workspace.isTrusted);
+    } catch (error) {
+      vscode.window.showWarningMessage(error instanceof Error ? error.message : "Buildr execution is blocked.");
+      messages.push({
+        role: "assistant",
+        text: error instanceof Error ? error.message : "Buildr execution is blocked."
+      });
+      renderCurrentState(stepPanel);
+      return;
+    }
+
+    isRunning = true;
+    activeAbortController = new AbortController();
+    renderCurrentState(stepPanel);
+    try {
+      await runDeterministicAgentWorkflow(prompt, message.fileMentions, stepPanel);
+    } finally {
+      isRunning = false;
+      activeAbortController = undefined;
+      renderCurrentState(stepPanel);
+    }
     return;
   }
 
-  try {
-    requireTrustedWorkspace(vscode.workspace.isTrusted);
-  } catch (error) {
-    vscode.window.showWarningMessage(error instanceof Error ? error.message : "Buildr execution is blocked.");
-    messages.push({
-      role: "assistant",
-      text: error instanceof Error ? error.message : "Buildr execution is blocked."
-    });
-    renderCurrentState(stepPanel);
-    return;
-  }
-
-  isRunning = true;
-  renderCurrentState(stepPanel);
-  activeAbortController = new AbortController();
-  try {
-    await runPhase1A(stepPanel);
-  } finally {
-    isRunning = false;
-    renderCurrentState(stepPanel);
-  }
+  await createPlanFromGoal(prompt, message.fileMentions, stepPanel);
 }
 
 async function runCurrentPlanFromUi(stepPanel: StepPanel): Promise<void> {
@@ -679,7 +737,7 @@ async function runCurrentPlanFromUi(stepPanel: StepPanel): Promise<void> {
   activeAbortController = new AbortController();
   renderCurrentState(stepPanel);
   try {
-    await runPhase1A(stepPanel);
+    await runDeterministicAgentWorkflowFromCurrentPlan(stepPanel);
   } finally {
     isRunning = false;
     renderCurrentState(stepPanel);
@@ -1272,6 +1330,430 @@ export function deactivate(): void {
   activeAbortController?.abort();
 }
 
+async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
+  events = [];
+  pendingApproval = undefined;
+  queuedVerificationCommand = undefined;
+  queuedWriteTargets = [];
+  queuedPatchApprovals = [];
+  finalSummaryState = undefined;
+  tokenBudgetState = undefined;
+
+  const resolvedMentions = resolveFileMentions(fileMentions);
+  currentPlanMentionedFiles = resolvedMentions;
+  const context = await createWorkspaceContextSummary(rawTask, resolvedMentions);
+  const workspaceTree = await createWorkspaceTree();
+  agentPipelineState = {
+    phase: "planning",
+    rawTask,
+    workspaceTree,
+    currentTaskIndex: 0,
+    coderResults: [],
+    reviewResults: [],
+    testCases: [],
+    testObservations: [],
+    retryCount: {},
+    warnings: [...context.warnings]
+  };
+  events.push(createContextInspectionEvent(context, "Agent repo context"));
+  renderCurrentState(stepPanel);
+
+  try {
+    const architect = await invokeJsonAgent("architect", createArchitectMessages({
+      requestId: createAgentRequestId("architect"),
+      rawTask: appendMentionHint(rawTask, resolvedMentions),
+      workspaceTree,
+      workspaceSummary: context.text
+    }), validateArchitectOutput);
+    agentPipelineState.plan = architect.data.plan;
+    agentPipelineState.warnings.push(...architect.warnings);
+    currentPlan = convertAgentPlanToBuildrPlan(rawTask, architect.data.plan);
+    events.push({
+      id: `agent:architect:${Date.now()}`,
+      title: "Architect plan",
+      status: "completed",
+      tool: "agent_architect",
+      summary: `Created deterministic plan with ${architect.data.plan.tasks.length} task(s).`,
+      warnings: architect.warnings
+    });
+    renderCurrentState(stepPanel);
+
+    await createReviewedPatchApprovals(architect.data.plan, context, stepPanel);
+    if (pendingApproval === undefined && queuedPatchApprovals.length === 0) {
+      await queueAgentTestGeneration(stepPanel);
+    }
+  } catch (error) {
+    failAgentPipeline(error);
+  }
+}
+
+async function runDeterministicAgentWorkflowFromCurrentPlan(stepPanel: StepPanel): Promise<void> {
+  if (currentPlan === undefined) {
+    return;
+  }
+  events = [];
+  pendingApproval = undefined;
+  queuedVerificationCommand = undefined;
+  queuedWriteTargets = [];
+  queuedPatchApprovals = [];
+  finalSummaryState = undefined;
+  tokenBudgetState = undefined;
+
+  const context = await createWorkspaceContextSummary(currentPlan.goal, currentPlanMentionedFiles);
+  const plan = convertBuildrPlanToAgentPlan(currentPlan);
+  agentPipelineState = {
+    phase: "coding",
+    rawTask: currentPlan.goal,
+    workspaceTree: await createWorkspaceTree(),
+    plan,
+    currentTaskIndex: 0,
+    coderResults: [],
+    reviewResults: [],
+    testCases: [],
+    testObservations: [],
+    retryCount: {},
+    warnings: [...context.warnings]
+  };
+  events.push(createContextInspectionEvent(context, "Agent repo context"));
+  try {
+    await createReviewedPatchApprovals(plan, context, stepPanel);
+    if (pendingApproval === undefined && queuedPatchApprovals.length === 0) {
+      await queueAgentTestGeneration(stepPanel);
+    }
+  } catch (error) {
+    failAgentPipeline(error);
+  }
+}
+
+async function createReviewedPatchApprovals(plan: AgentPlan, context: WorkspaceContextSummary, stepPanel: StepPanel): Promise<void> {
+  if (agentPipelineState === undefined) {
+    return;
+  }
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    agentPipelineState.phase = "coding";
+    agentPipelineState.currentTaskIndex = taskIndex;
+    renderCurrentState(stepPanel);
+    const result = await runCoderReviewLoop(task, context);
+    agentPipelineState.coderResults.push(result);
+    queuedPatchApprovals.push(...result.patches.map((patch) => createAgentPatchApproval(task, result, patch)));
+    renderCurrentState(stepPanel);
+  }
+
+  pendingApproval = queuedPatchApprovals.shift();
+  if (pendingApproval !== undefined) {
+    events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+  }
+}
+
+async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContextSummary): Promise<AgentCoderPipelineResult> {
+  if (agentPipelineState === undefined) {
+    throw new Error("Agent pipeline state is not initialized.");
+  }
+  let feedback: string | undefined;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    agentPipelineState.retryCount[task.id] = attempt - 1;
+    const files = await createFileSnapshots(task.targetFiles);
+    const coder = await invokeJsonAgent("coder", createCoderMessages({
+      requestId: createAgentRequestId("coder"),
+      input: {
+        task,
+        files,
+        ...(feedback === undefined ? {} : { feedback })
+      }
+    }), validateCoderOutput);
+    const patches = await createValidatedPatches(coder.data, files);
+    const formattedDiff = patches.map((patch) => formatPatchForWorkspace(patch)).join("\n\n");
+    const coderResult: AgentCoderPipelineResult = {
+      taskId: task.id,
+      attempt,
+      output: coder.data,
+      patches,
+      formattedDiff
+    };
+    events.push({
+      id: `agent:coder:${task.id}:${attempt}`,
+      title: `Coder: ${task.title}`,
+      status: "completed",
+      tool: "agent_coder",
+      summary: coder.data.summary,
+      evidence: { outputExcerpt: formattedDiff.slice(0, 4000) },
+      warnings: coder.warnings
+    });
+
+    agentPipelineState.phase = "reviewing";
+    const reviewer = await invokeJsonAgent("reviewer", createReviewerMessages({
+      requestId: createAgentRequestId("reviewer"),
+      task,
+      coderOutput: coder.data
+    }), validateReviewerOutput);
+    const issues = reviewer.data.status === "changes_needed" ? reviewer.data.issues : [];
+    agentPipelineState.reviewResults.push({
+      taskId: task.id,
+      status: reviewer.data.status,
+      issues
+    });
+    events.push({
+      id: `agent:reviewer:${task.id}:${attempt}`,
+      title: `Reviewer: ${task.title}`,
+      status: reviewer.data.status === "approved" ? "completed" : "failed",
+      tool: "agent_reviewer",
+      summary: reviewer.data.status === "approved" ? "Reviewer approved the diff." : `Reviewer requested changes: ${issues.join("; ")}`,
+      warnings: reviewer.warnings
+    });
+    if (reviewer.data.status === "approved") {
+      return coderResult;
+    }
+    feedback = issues.join("\n");
+  }
+
+  throw new Error(`Coder retry budget exhausted for ${task.title}.`);
+}
+
+async function createValidatedPatches(coderOutput: CoderOutput, snapshots: AgentFileSnapshot[]): Promise<TextPatch[]> {
+  const snapshotByPath = new Map(snapshots.map((snapshot) => [normalizeWorkspacePath(snapshot.path), snapshot]));
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined) {
+    throw new Error("No workspace folder is open.");
+  }
+
+  return coderOutput.diffs.map((diff) => {
+    const relativePath = normalizeWorkspacePath(diff.path);
+    const snapshot = snapshotByPath.get(relativePath);
+    if (snapshot === undefined) {
+      throw new Error(`Coder returned a diff for unassigned file ${diff.path}.`);
+    }
+    const absolute = resolve(root, relativePath);
+    if (!isWorkspaceRelativePath(root, absolute)) {
+      throw new Error(`Coder returned an out-of-workspace path ${diff.path}.`);
+    }
+    return createTextPatchFromAgentDiff(snapshot.content, { ...diff, path: relativePath }, absolute);
+  });
+}
+
+function createAgentPatchApproval(task: AgentPlanTask, result: AgentCoderPipelineResult, patch: TextPatch): PendingApproval<TextPatch> {
+  const diff = formatPatchForWorkspace(patch);
+  return {
+    id: `approval:agent_apply_patch:${Date.now()}:${task.id}:${patch.path}`,
+    title: `Apply ${task.title}`,
+    tool: "apply_patch",
+    target: patch.path,
+    risk: "high",
+    details: [
+      result.output.summary,
+      "",
+      `Task: ${task.title}`,
+      `Attempt: ${result.attempt}`,
+      "",
+      diff
+    ].join("\n"),
+    payload: patch
+  };
+}
+
+function formatPatchForWorkspace(patch: TextPatch): string {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined) {
+    return formatTextPatchAsGitDiff(patch);
+  }
+  const displayPath = normalizeWorkspacePath(relative(root, patch.path));
+  return formatTextPatchAsGitDiff({ ...patch, path: displayPath });
+}
+
+async function queueAgentTestGeneration(stepPanel: StepPanel): Promise<void> {
+  if (agentPipelineState?.plan === undefined) {
+    return;
+  }
+  agentPipelineState.phase = "testing";
+  const tester = await invokeJsonAgent("tester", createTesterMessages({
+    requestId: createAgentRequestId("tester"),
+    plan: agentPipelineState.plan
+  }), validateTesterOutput);
+  agentPipelineState.testCases = tester.data.testCases;
+  agentPipelineState.warnings.push(...tester.warnings);
+  events.push({
+    id: `agent:tester:cases:${Date.now()}`,
+    title: "Tester generated test cases",
+    status: tester.data.testCases.length > 0 ? "completed" : "blocked",
+    tool: "agent_tester",
+    summary: tester.data.testCases.length > 0
+      ? `Generated ${tester.data.testCases.length} test case(s).`
+      : "Tester did not generate executable test cases.",
+    warnings: tester.warnings
+  });
+
+  const testCase = tester.data.testCases[0];
+  if (testCase === undefined) {
+    completeAgentPipeline("No test cases were generated.");
+    renderCurrentState(stepPanel, createFinalReportSummary());
+    return;
+  }
+
+  pendingApproval = createTerminalApproval(testCase.command, testCase.id);
+  events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+  renderCurrentState(stepPanel);
+}
+
+async function inspectAgentTestResults(stepPanel: StepPanel): Promise<void> {
+  if (agentPipelineState?.plan === undefined) {
+    return;
+  }
+  const tester = await invokeJsonAgent("tester", createTesterMessages({
+    requestId: createAgentRequestId("tester"),
+    plan: agentPipelineState.plan,
+    observations: agentPipelineState.testObservations
+  }), validateTesterOutput);
+  const status = tester.data.result?.status ?? (agentPipelineState.testObservations.every((observation) => observation.exitCode === 0) ? "passed" : "failed");
+  const failures = tester.data.result?.failures ?? [];
+  events.push({
+    id: `agent:tester:result:${Date.now()}`,
+    title: "Tester inspected results",
+    status: status === "passed" ? "completed" : "failed",
+    tool: "agent_tester",
+    summary: status === "passed" ? "Tester marked verification as passed." : `Tester marked verification as failed: ${failures.join("; ")}`,
+    warnings: tester.warnings
+  });
+  completeAgentPipeline(status === "passed" ? "Agent workflow completed." : "Agent workflow completed with failing tests.");
+  renderCurrentState(stepPanel, createFinalReportSummary());
+}
+
+async function invokeJsonAgent<TData>(
+  role: AgentRole,
+  messagesForModel: CoreChatMessage[],
+  validateData: (value: unknown) => TData
+): Promise<AgentJsonEnvelope<TData>> {
+  const configuredCore = createConfiguredCore();
+  const modelId = getConfiguredModelId();
+  const requestId = extractAgentRequestId(messagesForModel);
+  let rawResponse = "";
+  for await (const delta of configuredCore.model.chat({
+    model: modelId,
+    temperature: 0.1,
+    messages: messagesForModel
+  }, activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })) {
+    if (delta.type === "text" && delta.content !== undefined) {
+      rawResponse += delta.content;
+    }
+  }
+  return parseAgentEnvelope(rawResponse, role, requestId, validateData);
+}
+
+function convertAgentPlanToBuildrPlan(goal: string, plan: AgentPlan): BuildrPlan {
+  return {
+    goal,
+    acceptanceCriteria: plan.tasks.flatMap((task) => task.acceptanceCriteria),
+    scopeBoundaries: ["Only edit files named by Architect tasks.", "Do not run generated tests without approval."],
+    rulePacks: ["agent-behavior", "verification", "git-workflow"],
+    verification: {
+      required: true,
+      levels: ["tests"],
+      commands: [],
+      allowUnverifiedCompletion: "ask",
+      includeOutputEvidence: true
+    },
+    steps: plan.tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      kind: "write" as const,
+      tools: ["agent_coder", "agent_reviewer", "apply_patch"],
+      targets: task.targetFiles,
+      dependsOn: task.dependsOn,
+      risk: "medium" as const,
+      verification: task.acceptanceCriteria
+    }))
+  };
+}
+
+function convertBuildrPlanToAgentPlan(plan: BuildrPlan): AgentPlan {
+  return {
+    summary: plan.goal,
+    tasks: plan.steps.filter((step) => step.kind === "write").map((step) => ({
+      id: step.id,
+      title: step.title,
+      instructions: [
+        step.title,
+        step.scopeCheck ?? "",
+        ...(step.verification ?? [])
+      ].filter((part) => part.length > 0).join("\n"),
+      targetFiles: step.targets,
+      dependsOn: step.dependsOn,
+      acceptanceCriteria: step.verification ?? plan.acceptanceCriteria
+    }))
+  };
+}
+
+async function createWorkspaceTree(): Promise<string[]> {
+  const root = vscode.workspace.workspaceFolders?.[0];
+  if (root === undefined) {
+    return [];
+  }
+  const files = await vscode.workspace.findFiles(
+    new vscode.RelativePattern(root, "**/*"),
+    "{**/.git/**,**/node_modules/**,**/dist/**,**/out/**,**/coverage/**,**/.pnpm-store/**}",
+    500
+  );
+  return files.map((uri) => normalizeWorkspacePath(relative(root.uri.fsPath, uri.fsPath))).sort();
+}
+
+async function createFileSnapshots(paths: string[]): Promise<AgentFileSnapshot[]> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root === undefined) {
+    return [];
+  }
+  const unique = [...new Set(paths.map(normalizeWorkspacePath))];
+  return Promise.all(unique.map(async (path) => {
+    const absolute = resolve(root, path);
+    if (!isWorkspaceRelativePath(root, absolute)) {
+      throw new Error(`Architect assigned an out-of-workspace path ${path}.`);
+    }
+    const content = await readTextFileIfExists(absolute);
+    return {
+      path,
+      content,
+      hash: hashText(content)
+    };
+  }));
+}
+
+function createAgentRequestId(role: AgentRole): string {
+  return `${role}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function extractAgentRequestId(messagesForModel: CoreChatMessage[]): string {
+  const system = messagesForModel.find((message) => message.role === "system")?.content ?? "";
+  const match = /"requestId":"([^"]+)"/u.exec(system);
+  if (match === null) {
+    throw new Error("Agent request id could not be read from prompt.");
+  }
+  return match[1]!;
+}
+
+function completeAgentPipeline(summary: string): void {
+  if (agentPipelineState !== undefined) {
+    agentPipelineState.phase = "complete";
+    agentPipelineState.finalSummary = summary;
+  }
+  messages.push({ role: "assistant", text: summary });
+}
+
+function failAgentPipeline(error: unknown): void {
+  const summary = error instanceof Error ? error.message : String(error);
+  if (agentPipelineState !== undefined) {
+    agentPipelineState.phase = "failed";
+    agentPipelineState.finalSummary = summary;
+    agentPipelineState.warnings.push(summary);
+  }
+  events.push({
+    id: `agent:failed:${Date.now()}`,
+    title: "Agent workflow failed",
+    status: "failed",
+    tool: "agent_orchestrator",
+    summary,
+    warnings: []
+  });
+  messages.push({ role: "assistant", text: summary });
+  vscode.window.showErrorMessage(summary);
+}
+
 async function runPhase1A(stepPanel: StepPanel): Promise<void> {
   if (currentPlan === undefined) {
     return;
@@ -1366,12 +1848,55 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
         return;
       }
 
+      if (agentPipelineState !== undefined && agentPipelineState.phase !== "complete" && agentPipelineState.phase !== "failed") {
+        await queueAgentTestGeneration(stepPanel);
+        return;
+      }
+
       if (queuedVerificationCommand !== undefined) {
         renderCurrentState(stepPanel, await queueVerificationApproval() === "skipped" ? createFinalReportSummary() : undefined);
         return;
       }
     } else if (approval.tool === "run_terminal") {
       const payload = approval.payload as TerminalApprovalPayload;
+      if (payload.agentTestCaseId !== undefined) {
+        const result = await runCommandAsVscodeTask(payload.command, payload.cwd);
+        agentPipelineState?.testObservations.push({
+          id: payload.agentTestCaseId,
+          command: result.command,
+          exitCode: result.exitCode,
+          stdout: result.stdout,
+          stderr: result.stderr
+        });
+        events.push({
+          id: `${approval.id}:completed`,
+          title: "Run approved agent test",
+          status: result.exitCode === 0 ? "completed" : "failed",
+          tool: "vscode_task",
+          target: payload.cwd,
+          summary: `Task exited with ${result.exitCode ?? "unknown"}.`,
+          evidence: result.exitCode === undefined
+            ? {
+              command: result.command,
+              outputExcerpt: [result.stdout, result.stderr].filter((part) => part.length > 0).join("\n").slice(-4000)
+            }
+            : {
+              command: result.command,
+              exitCode: result.exitCode,
+              outputExcerpt: [result.stdout, result.stderr].filter((part) => part.length > 0).join("\n").slice(-4000)
+            },
+          warnings: []
+        });
+        const nextTestCase = agentPipelineState?.testCases.find((testCase) => !agentPipelineState?.testObservations.some((observation) => observation.id === testCase.id));
+        if (nextTestCase !== undefined) {
+          pendingApproval = createTerminalApproval(nextTestCase.command, nextTestCase.id);
+          events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+          renderCurrentState(stepPanel);
+          return;
+        }
+        await inspectAgentTestResults(stepPanel);
+        return;
+      }
       const commandOptions = {
         cwd: payload.cwd,
         ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
@@ -1757,16 +2282,16 @@ async function queueVerificationApproval(): Promise<"queued" | "skipped"> {
   return "queued";
 }
 
-function createTerminalApproval(command: string): PendingApproval<TerminalApprovalPayload> {
+function createTerminalApproval(command: string, agentTestCaseId?: string): PendingApproval<TerminalApprovalPayload> {
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
   return {
     id: `approval:run_terminal:${Date.now()}`,
-    title: "Run verification command",
+    title: agentTestCaseId === undefined ? "Run verification command" : "Run agent test task",
     tool: "run_terminal",
     target: cwd,
     risk: "medium",
     details: `Command: ${command}\nCwd: ${cwd}\nTimeout: 120000ms`,
-    payload: { command, cwd }
+    payload: agentTestCaseId === undefined ? { command, cwd } : { command, cwd, agentTestCaseId }
   };
 }
 
@@ -1865,6 +2390,7 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string, options
     ...(tokenBudgetState === undefined ? {} : { tokenBudget: tokenBudgetState }),
     ...(currentPlan === undefined ? {} : { plan: currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
+    ...(agentPipelineState === undefined ? {} : { agentPipeline: agentPipelineState }),
     ...(finalSummaryState === undefined ? {} : { finalSummary: finalSummaryState }),
     activeSessionId,
     sessions: getSessionSummaries()

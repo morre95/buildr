@@ -27,6 +27,7 @@ export * from "./rules/ruleEngine.js";
 export * from "./rules/scopeFidelity.js";
 export * from "./runtime/buildrCore.js";
 export * from "./runtime/agents.js";
+export * from "./runtime/deterministicAgents.js";
 export * from "./runtime/execution.js";
 export * from "./runtime/remoteCompatibility.js";
 export * from "./runtime/tokenBudget.js";

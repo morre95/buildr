@@ -209,6 +209,9 @@ export function createCoderMessages(options: {
     "Implement exactly the assigned task.",
     "Return structured diffs only, never full files.",
     "Use workspace-relative paths and the provided beforeHash for every file diff.",
+    "Coder data must be an object with shape: { summary: string, diffs: [{ path: string, beforeHash: string, hunks: [{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }] }] }.",
+    "For new files, use oldStart 0, oldLines 0, newStart 1, newLines equal to the number of added lines, and hunk lines that all start with '+'.",
+    "Every hunk line must start with exactly one of: space for context, + for additions, - for removals.",
     "Do not decide routing, retries, testing, approval, or completion."
   ], options.input);
 }

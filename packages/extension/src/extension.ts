@@ -1621,9 +1621,54 @@ async function invokeJsonAgent<TData>(
   messagesForModel: CoreChatMessage[],
   validateData: (value: unknown) => TData
 ): Promise<AgentJsonEnvelope<TData>> {
+  const requestId = extractAgentRequestId(messagesForModel);
+  const rawResponse = await invokeAgentModel(messagesForModel);
+  try {
+    return parseAgentEnvelope(rawResponse, role, requestId, validateData);
+  } catch (error) {
+    const repairMessages = createAgentRepairMessages({
+      role,
+      requestId,
+      schema: agentDataSchemaDescription(role),
+      validationError: error instanceof Error ? error.message : String(error),
+      rawResponse
+    });
+    events.push({
+      id: `agent:${role}:repair:${Date.now()}`,
+      title: `Repair ${role} JSON`,
+      status: "running",
+      tool: `agent_${role}`,
+      summary: `Invalid ${role} JSON: ${error instanceof Error ? error.message : String(error)}. Asking the model to repair the envelope.`,
+      evidence: { outputExcerpt: rawResponse.slice(0, 4000) },
+      warnings: []
+    });
+    const repairedResponse = await invokeAgentModel(repairMessages);
+    try {
+      const repaired = parseAgentEnvelope(repairedResponse, role, requestId, validateData);
+      events.push({
+        id: `agent:${role}:repair:${Date.now()}:completed`,
+        title: `Repair ${role} JSON`,
+        status: "completed",
+        tool: `agent_${role}`,
+        summary: `Repaired ${role} JSON envelope.`,
+        warnings: repaired.warnings
+      });
+      return repaired;
+    } catch (repairError) {
+      throw new Error([
+        `${capitalize(role)} returned invalid JSON after one repair attempt.`,
+        `Initial validation error: ${error instanceof Error ? error.message : String(error)}`,
+        `Repair validation error: ${repairError instanceof Error ? repairError.message : String(repairError)}`,
+        `Initial response excerpt: ${rawResponse.slice(0, 1000)}`,
+        `Repair response excerpt: ${repairedResponse.slice(0, 1000)}`
+      ].join("\n"));
+    }
+  }
+}
+
+async function invokeAgentModel(messagesForModel: CoreChatMessage[]): Promise<string> {
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
-  const requestId = extractAgentRequestId(messagesForModel);
   let rawResponse = "";
   for await (const delta of configuredCore.model.chat({
     model: modelId,
@@ -1634,7 +1679,57 @@ async function invokeJsonAgent<TData>(
       rawResponse += delta.content;
     }
   }
-  return parseAgentEnvelope(rawResponse, role, requestId, validateData);
+  return rawResponse;
+}
+
+function createAgentRepairMessages(options: {
+  role: AgentRole;
+  requestId: string;
+  schema: string;
+  validationError: string;
+  rawResponse: string;
+}): CoreChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        `You repair invalid deterministic ${options.role} agent output.`,
+        "Return only JSON. Do not wrap the JSON in Markdown.",
+        `The corrected envelope must keep role "${options.role}", version 1, requestId "${options.requestId}", status "ok" or "blocked", data, and warnings array.`,
+        "Do not add prose. Do not change the requestId. Do not decide routing.",
+        "",
+        "Required data schema:",
+        options.schema
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        "The previous response failed validation.",
+        `Validation error: ${options.validationError}`,
+        "",
+        "Previous response:",
+        options.rawResponse
+      ].join("\n")
+    }
+  ];
+}
+
+function agentDataSchemaDescription(role: AgentRole): string {
+  switch (role) {
+    case "architect":
+      return "{ plan: { summary: string, tasks: [{ id: string, title: string, instructions: string, targetFiles: string[], dependsOn: string[], acceptanceCriteria: string[] }] } }";
+    case "coder":
+      return "{ summary: string, diffs: [{ path: string, beforeHash: string, hunks: [{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }] }] }. Hunk lines must start with space, +, or -. For new files use oldStart 0 and oldLines 0.";
+    case "reviewer":
+      return "{ status: 'approved' } or { status: 'changes_needed', issues: string[] }";
+    case "tester":
+      return "{ testCases: [{ id: string, title: string, command: string }], result?: { status: 'passed' | 'failed', failures: string[] } }";
+  }
+}
+
+function capitalize(value: string): string {
+  return value.length === 0 ? value : `${value[0]!.toUpperCase()}${value.slice(1)}`;
 }
 
 function convertAgentPlanToBuildrPlan(goal: string, plan: AgentPlan): BuildrPlan {

@@ -94,7 +94,7 @@
         "buildr.model.provider": {
           "type": "string",
           "default": "ollama",
-          "enum": ["ollama", "lmstudio-openai", "lmstudio-native", "openai-compatible"],
+          "enum": ["ollama", "lmstudio-openai", "lmstudio-native", "openai", "openrouter", "anthropic", "openai-compatible"],
           "description": "Default model provider used by Buildr."
         },
         "buildr.model.ollamaBaseUrl": {
@@ -106,6 +106,21 @@
           "type": "string",
           "default": "http://127.0.0.1:1234",
           "description": "LM Studio endpoint reachable from the active extension host."
+        },
+        "buildr.model.openAiBaseUrl": {
+          "type": "string",
+          "default": "https://api.openai.com",
+          "description": "OpenAI API base URL."
+        },
+        "buildr.model.openRouterBaseUrl": {
+          "type": "string",
+          "default": "https://openrouter.ai/api",
+          "description": "OpenRouter API base URL."
+        },
+        "buildr.model.anthropicBaseUrl": {
+          "type": "string",
+          "default": "https://api.anthropic.com",
+          "description": "Anthropic API base URL."
         },
         "buildr.model.modelId": {
           "type": "string",

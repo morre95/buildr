@@ -96,6 +96,7 @@ let tokenBudgetState: TokenBudgetState | undefined;
 let currentPlanMentionedFiles: string[] = [];
 let finalSummaryState: string | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
+let providerSecrets: BuildrSecretStore | undefined;
 let activeSessionId = "";
 let savedAgentSessions: PersistedAgentSession[] = [];
 let agentPipelineState: AgentPipelineState | undefined;
@@ -385,6 +386,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const core = new BuildrCore();
   const stepPanel = new StepPanel(context.extensionUri);
   const secretStore = new BuildrSecretStore(context.secrets);
+  providerSecrets = secretStore;
   registerBuildrChatParticipant(context, core);
   registerBuildrLanguageModelTools(context);
 
@@ -475,6 +477,21 @@ export function activate(context: vscode.ExtensionContext): void {
           description: "Uses OpenAI-compatible /v1/chat/completions, usually http://127.0.0.1:1234"
         },
         {
+          label: "OpenAI",
+          value: "openai",
+          description: "Uses https://api.openai.com/v1"
+        },
+        {
+          label: "OpenRouter",
+          value: "openrouter",
+          description: "Uses https://openrouter.ai/api/v1"
+        },
+        {
+          label: "Anthropic",
+          value: "anthropic",
+          description: "Uses Anthropic Messages API"
+        },
+        {
           label: "OpenAI-compatible",
           value: "openai-compatible",
           description: "Uses OpenAI-compatible /v1/chat/completions"
@@ -489,25 +506,42 @@ export function activate(context: vscode.ExtensionContext): void {
 
       await config.update("provider", provider.value, vscode.ConfigurationTarget.Workspace);
 
-      const urlKey = provider.value === "ollama" ? "ollamaBaseUrl" : "lmStudioBaseUrl";
-      const defaultUrl = provider.value === "ollama" ? "http://127.0.0.1:11434" : "http://127.0.0.1:1234";
+      const selectedProvider = parseProvider(provider.value);
+      const urlKey = providerUrlSettingKey(selectedProvider);
+      const defaultUrl = defaultProviderBaseUrl(selectedProvider);
       const currentUrl = config.get<string>(urlKey, defaultUrl);
       const nextUrl = await vscode.window.showInputBox({
         title: `Buildr: Configure ${provider.label} Endpoint`,
-        prompt: provider.value === "ollama"
-          ? "Base URL only. Example: http://127.0.0.1:11434"
-          : "Base URL only, without /v1. Example: http://127.0.0.1:1234",
+        prompt: provider.value === "anthropic"
+          ? "Base URL only. Example: https://api.anthropic.com"
+          : provider.value === "ollama"
+            ? "Base URL only. Example: http://127.0.0.1:11434"
+            : "Base URL only, without /v1. Example: https://api.openai.com",
         value: currentUrl,
         ignoreFocusOut: true
       });
 
       if (nextUrl) {
-        await config.update(urlKey, stripOpenAiVersionSuffix(nextUrl), vscode.ConfigurationTarget.Workspace);
+        await config.update(urlKey, stripProviderVersionSuffix(selectedProvider, nextUrl), vscode.ConfigurationTarget.Workspace);
+      }
+
+      if (!isLocalProvider(selectedProvider, stripProviderVersionSuffix(selectedProvider, nextUrl ?? currentUrl))) {
+        const secret = await vscode.window.showInputBox({
+          title: "Buildr: Provider API Key",
+          prompt: "API key for this cloud provider. Leave blank to keep an existing saved key.",
+          password: true,
+          ignoreFocusOut: true
+        });
+        if (secret !== undefined && secret.length > 0) {
+          await secretStore.storeProviderSecret(providerSecretKey(selectedProvider), secret);
+          vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
+        }
       }
 
       const modelAdapter = BuildrCore.createModelAdapter({
-        provider: parseProvider(provider.value),
-        baseUrl: stripOpenAiVersionSuffix(nextUrl ?? currentUrl)
+        provider: selectedProvider,
+        baseUrl: stripProviderVersionSuffix(selectedProvider, nextUrl ?? currentUrl),
+        getApiKey: () => providerSecrets?.getProviderSecret(providerSecretKey(selectedProvider)) ?? Promise.resolve(undefined)
       });
       const modelId = await selectModelId(modelAdapter, provider.label, config.get<string>("modelId", "qwen2.5-coder"));
       if (modelId === undefined) {
@@ -515,16 +549,6 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await config.update("modelId", modelId, vscode.ConfigurationTarget.Workspace);
 
-      const secret = await vscode.window.showInputBox({
-        title: "Buildr: Optional Provider Secret",
-        prompt: "Optional API key for cloud/OpenAI-compatible providers. Leave blank to keep existing secret.",
-        password: true,
-        ignoreFocusOut: true
-      });
-      if (secret !== undefined && secret.length > 0) {
-        await secretStore.storeProviderSecret("openaiCompatible", secret);
-        vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
-      }
       vscode.window.showInformationMessage(`Buildr model set to ${provider.label}.`);
     }),
     vscode.commands.registerCommand("buildr.openSettings", openBuildrSettings),
@@ -547,14 +571,11 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 function createConfiguredCore(): BuildrCore {
-  const modelConfig = vscode.workspace.getConfiguration("buildr.model");
-  const provider = modelConfig.get<string>("provider", "ollama");
-  const baseUrl = provider === "lmstudio-openai" || provider === "lmstudio-native" || provider === "openai-compatible"
-    ? modelConfig.get<string>("lmStudioBaseUrl", "http://127.0.0.1:1234")
-    : modelConfig.get<string>("ollamaBaseUrl", "http://127.0.0.1:11434");
+  const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
   const model = BuildrCore.createModelAdapter({
-    provider: parseProvider(provider),
-    baseUrl
+    provider,
+    baseUrl,
+    getApiKey: () => providerSecrets?.getProviderSecret(providerSecretKey(provider)) ?? Promise.resolve(undefined)
   });
   return new BuildrCore({ model });
 }
@@ -562,9 +583,7 @@ function createConfiguredCore(): BuildrCore {
 function getConfiguredProviderAndBaseUrl(): { provider: ProviderId; baseUrl: string } {
   const modelConfig = vscode.workspace.getConfiguration("buildr.model");
   const provider = parseProvider(modelConfig.get<string>("provider", "ollama"));
-  const baseUrl = provider === "lmstudio-openai" || provider === "lmstudio-native" || provider === "openai-compatible"
-    ? modelConfig.get<string>("lmStudioBaseUrl", "http://127.0.0.1:1234")
-    : modelConfig.get<string>("ollamaBaseUrl", "http://127.0.0.1:11434");
+  const baseUrl = modelConfig.get<string>(providerUrlSettingKey(provider), defaultProviderBaseUrl(provider));
   return { provider, baseUrl };
 }
 
@@ -574,7 +593,15 @@ function getConfiguredModelId(): string {
 }
 
 function parseProvider(value: string): ProviderId {
-  if (value === "ollama" || value === "lmstudio-openai" || value === "lmstudio-native" || value === "openai-compatible") {
+  if (
+    value === "ollama"
+    || value === "lmstudio-openai"
+    || value === "lmstudio-native"
+    || value === "openai-compatible"
+    || value === "openai"
+    || value === "openrouter"
+    || value === "anthropic"
+  ) {
     return value;
   }
   return "ollama";
@@ -582,6 +609,61 @@ function parseProvider(value: string): ProviderId {
 
 function stripOpenAiVersionSuffix(value: string): string {
   return value.trim().replace(/\/v1\/?$/u, "");
+}
+
+function stripProviderVersionSuffix(provider: ProviderId, value: string): string {
+  return provider === "ollama" || provider === "anthropic" ? value.trim().replace(/\/$/, "") : stripOpenAiVersionSuffix(value);
+}
+
+function providerUrlSettingKey(provider: ProviderId): string {
+  switch (provider) {
+    case "ollama":
+      return "ollamaBaseUrl";
+    case "lmstudio-openai":
+    case "lmstudio-native":
+    case "openai-compatible":
+      return "lmStudioBaseUrl";
+    case "openai":
+      return "openAiBaseUrl";
+    case "openrouter":
+      return "openRouterBaseUrl";
+    case "anthropic":
+      return "anthropicBaseUrl";
+  }
+}
+
+function defaultProviderBaseUrl(provider: ProviderId): string {
+  switch (provider) {
+    case "ollama":
+      return "http://127.0.0.1:11434";
+    case "lmstudio-openai":
+    case "lmstudio-native":
+    case "openai-compatible":
+      return "http://127.0.0.1:1234";
+    case "openai":
+      return "https://api.openai.com";
+    case "openrouter":
+      return "https://openrouter.ai/api";
+    case "anthropic":
+      return "https://api.anthropic.com";
+  }
+}
+
+function providerSecretKey(provider: ProviderId): string {
+  switch (provider) {
+    case "openai":
+      return "openai";
+    case "openrouter":
+      return "openrouter";
+    case "anthropic":
+      return "anthropic";
+    case "openai-compatible":
+      return "openaiCompatible";
+    case "ollama":
+    case "lmstudio-openai":
+    case "lmstudio-native":
+      return provider;
+  }
 }
 
 async function selectModelId(adapter: ModelAdapter, providerLabel: string, currentModelId: string): Promise<string | undefined> {
@@ -765,6 +847,9 @@ function changeCurrentPlan(stepPanel: StepPanel): void {
 }
 
 async function createPlanFromGoal(goal: string, fileMentions: string[], stepPanel: StepPanel): Promise<BuildrPlan | undefined> {
+  if (!await ensureCloudProviderReady("create a plan with workspace context")) {
+    return undefined;
+  }
   isRunning = true;
   activeAbortController = new AbortController();
   archiveCurrentPlan();
@@ -895,6 +980,11 @@ async function handleFileSearch(message: FileSearchMessage, stepPanel: StepPanel
 }
 
 async function answerGeneralQuestion(question: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
+  if (!await ensureCloudProviderReady("answer with workspace context")) {
+    messages.push({ role: "assistant", text: "Buildr did not send workspace context to the configured cloud provider." });
+    renderCurrentState(stepPanel);
+    return;
+  }
   const resolvedMentions = resolveFileMentions(fileMentions);
   const mentionContext = await createAskMentionContext(resolvedMentions);
   const configuredCore = createConfiguredCore();
@@ -1340,6 +1430,11 @@ export function deactivate(): void {
 }
 
 async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
+  if (!await ensureCloudProviderReady("run Agent mode with workspace context")) {
+    messages.push({ role: "assistant", text: "Buildr did not send workspace context to the configured cloud provider." });
+    renderCurrentState(stepPanel);
+    return;
+  }
   events = [];
   pendingApproval = undefined;
   queuedVerificationCommand = undefined;
@@ -1398,6 +1493,11 @@ async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: stri
 
 async function runDeterministicAgentWorkflowFromCurrentPlan(stepPanel: StepPanel): Promise<void> {
   if (currentPlan === undefined) {
+    return;
+  }
+  if (!await ensureCloudProviderReady("run the approved plan with workspace context")) {
+    messages.push({ role: "assistant", text: "Buildr did not send workspace context to the configured cloud provider." });
+    renderCurrentState(stepPanel);
     return;
   }
   events = [];
@@ -2159,16 +2259,8 @@ async function createPatchApprovalForActiveEditor(goal: string): Promise<Pending
     return undefined;
   }
 
-  const provider = vscode.workspace.getConfiguration("buildr.model").get<string>("provider", "ollama");
-  if (provider === "openai-compatible") {
-    const approval = await vscode.window.showWarningMessage(
-      "Buildr is about to send the active file to the configured OpenAI-compatible endpoint. Continue only if this endpoint is trusted.",
-      { modal: true },
-      "Send"
-    );
-    if (approval !== "Send") {
-      return undefined;
-    }
+  if (!await ensureCloudProviderReady("send the active file to the configured provider")) {
+    return undefined;
   }
 
   const configuredCore = createConfiguredCore();
@@ -2236,6 +2328,9 @@ async function queueParallelPlanPatchApprovals(stepPanel: StepPanel): Promise<vo
 }
 
 async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWriteTarget[], stepPanel: StepPanel): Promise<Array<PendingApproval<TextPatch>>> {
+  if (!await ensureCloudProviderReady("create patch proposals with workspace context")) {
+    return [];
+  }
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
   const context = await createWorkspaceContextSummary(goal, currentPlanMentionedFiles);
@@ -2298,6 +2393,9 @@ async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWri
 }
 
 async function createPatchApprovalForPlanTarget(goal: string, target: PlanWriteTarget): Promise<PendingApproval<TextPatch>> {
+  if (!await ensureCloudProviderReady("create a patch proposal with workspace context")) {
+    throw new Error("Buildr did not send workspace context to the configured cloud provider.");
+  }
   const before = await readTextFileIfExists(target.path);
   if (before.length > 80_000) {
     throw new Error(`Skipped ${target.path} because it is larger than 80 KB.`);
@@ -2564,10 +2662,43 @@ function formatTokenBudgetSummary(state: TokenBudgetState): string {
 
 function isConfiguredLocalModel(): boolean {
   const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
+  return isLocalProvider(provider, baseUrl);
+}
+
+function isLocalProvider(provider: ProviderId, baseUrl: string): boolean {
   return provider === "ollama"
     || provider === "lmstudio-openai"
     || provider === "lmstudio-native"
     || isLocalBaseUrl(baseUrl);
+}
+
+async function ensureCloudProviderReady(action: string): Promise<boolean> {
+  if (isConfiguredLocalModel()) {
+    return true;
+  }
+
+  const { provider } = getConfiguredProviderAndBaseUrl();
+  const secret = await providerSecrets?.getProviderSecret(providerSecretKey(provider));
+  if (secret === undefined || secret.length === 0) {
+    vscode.window.showWarningMessage(`Buildr needs an API key for ${provider} before it can ${action}. Run Buildr: Configure Model and store a provider secret.`);
+    return false;
+  }
+
+  const policy = vscode.workspace.getConfiguration("buildr.privacy").get<string>("cloudSendPolicy", "ask");
+  if (policy === "never") {
+    vscode.window.showWarningMessage(`Buildr privacy policy blocks sending workspace context to ${provider}.`);
+    return false;
+  }
+  if (policy === "allow") {
+    return true;
+  }
+
+  const approval = await vscode.window.showWarningMessage(
+    `Buildr is about to ${action} using ${provider}. This may send workspace context or file contents to a cloud provider.`,
+    { modal: true },
+    "Send"
+  );
+  return approval === "Send";
 }
 
 function isLocalBaseUrl(value: string): boolean {

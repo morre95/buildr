@@ -8,6 +8,9 @@ export async function openBuildrSettings(): Promise<void> {
     "Model id",
     "Ollama base URL",
     "LM Studio base URL",
+    "OpenAI base URL",
+    "OpenRouter base URL",
+    "Anthropic base URL",
     "Token budget",
     "Hard token cap",
     "Token warning thresholds",
@@ -37,7 +40,7 @@ export async function openBuildrSettings(): Promise<void> {
   const target = vscode.ConfigurationTarget.Workspace;
   switch (choice) {
     case "Model provider":
-      await updateChoice("buildr.model", "provider", ["ollama", "lmstudio-openai", "lmstudio-native", "openai-compatible"], target);
+      await updateChoice("buildr.model", "provider", ["ollama", "lmstudio-openai", "lmstudio-native", "openai", "openrouter", "anthropic", "openai-compatible"], target);
       break;
     case "Model id":
       await updateInput("buildr.model", "modelId", "Model id to send to the configured provider, such as qwen2.5-coder or the loaded LM Studio model id.", target);
@@ -47,6 +50,15 @@ export async function openBuildrSettings(): Promise<void> {
       break;
     case "LM Studio base URL":
       await updateInput("buildr.model", "lmStudioBaseUrl", "LM Studio base URL reachable from this extension host. Do not include /v1; Buildr adds it.", target);
+      break;
+    case "OpenAI base URL":
+      await updateInput("buildr.model", "openAiBaseUrl", "OpenAI base URL. Do not include /v1; Buildr adds it.", target);
+      break;
+    case "OpenRouter base URL":
+      await updateInput("buildr.model", "openRouterBaseUrl", "OpenRouter base URL. Do not include /v1; Buildr adds it.", target);
+      break;
+    case "Anthropic base URL":
+      await updateInput("buildr.model", "anthropicBaseUrl", "Anthropic base URL.", target);
       break;
     case "Token budget":
       await updateNumber("buildr.context", "tokenBudget", "Maximum context token budget.", target);

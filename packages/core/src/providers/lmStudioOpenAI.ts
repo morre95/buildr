@@ -5,6 +5,7 @@ import type {
   ModelCapabilities,
   ModelDelta,
   ModelInfo,
+  ProviderId,
   ToolCall,
   ToolDefinition,
   TokenCountInput,
@@ -38,19 +39,46 @@ interface OpenAICompatibleToolCallChunk {
   };
 }
 
+export interface OpenAICompatibleAdapterOptions {
+  baseUrl?: string;
+  apiKey?: string;
+  getApiKey?: () => Promise<string | undefined>;
+  defaultHeaders?: Record<string, string>;
+  provider?: Extract<ProviderId, "lmstudio-openai" | "openai-compatible" | "openai" | "openrouter">;
+  displayName?: string;
+  chatPath?: string;
+  modelsPath?: string;
+  embeddings?: boolean;
+}
+
 export interface LMStudioOpenAIAdapterOptions {
   baseUrl?: string;
 }
 
-export class LMStudioOpenAIAdapter implements ModelAdapter {
-  readonly id = "lmstudio-openai";
-  readonly displayName = "LM Studio OpenAI-Compatible";
-  readonly provider = "lmstudio-openai";
+export class OpenAICompatibleAdapter implements ModelAdapter {
+  readonly id: string;
+  readonly displayName: string;
+  readonly provider: Extract<ProviderId, "lmstudio-openai" | "openai-compatible" | "openai" | "openrouter">;
 
   private readonly baseUrl: string;
+  private readonly apiKey: string | undefined;
+  private readonly getApiKey: (() => Promise<string | undefined>) | undefined;
+  private readonly defaultHeaders: Record<string, string>;
+  private readonly chatPath: string;
+  private readonly modelsPath: string;
+  private readonly embeddings: boolean;
 
-  constructor(options: LMStudioOpenAIAdapterOptions = {}) {
+  constructor(options: OpenAICompatibleAdapterOptions = {}) {
+    this.provider = options.provider ?? "openai-compatible";
+    this.id = this.provider;
+    this.displayName = options.displayName ?? "OpenAI-Compatible";
     this.baseUrl = (options.baseUrl ?? "http://127.0.0.1:1234").replace(/\/$/, "");
+    this.apiKey = options.apiKey;
+    this.getApiKey = options.getApiKey;
+    this.defaultHeaders = options.defaultHeaders ?? {};
+    this.chatPath = options.chatPath ?? "/v1/chat/completions";
+    this.modelsPath = options.modelsPath ?? "/v1/models";
+    this.embeddings = options.embeddings ?? false;
   }
 
   async getCapabilities(): Promise<ModelCapabilities> {
@@ -62,15 +90,16 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
       jsonSchemaOutput: false,
       thinking: false,
       images: false,
-      embeddings: true,
+      embeddings: this.embeddings,
       recommendedContextTokens: 32000
     };
   }
 
   async *chat(request: ChatRequest, options: ChatOptions = {}): AsyncIterable<ModelDelta> {
+    const headers = await this.createHeaders();
     const init: RequestInit = {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({
         model: request.model,
         messages: request.messages.map(toOpenAIMessage),
@@ -83,13 +112,13 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
       init.signal = options.signal;
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, init);
+    const response = await fetch(`${this.baseUrl}${this.chatPath}`, init);
     if (!response.ok) {
       const message = extractProviderErrorMessage(await readErrorResponse(response));
-      throw createProviderError(message ?? `LM Studio chat failed with HTTP ${response.status}.`);
+      throw createProviderError(message ?? `${this.displayName} chat failed with HTTP ${response.status}.`);
     }
     if (response.body === null) {
-      throw new Error(`LM Studio chat failed with HTTP ${response.status}.`);
+      throw new Error(`${this.displayName} chat failed with HTTP ${response.status}.`);
     }
 
     const reader = response.body.getReader();
@@ -169,9 +198,11 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
   }
 
   async listModels(): Promise<ModelInfo[]> {
-    const response = await fetch(`${this.baseUrl}/v1/models`);
+    const response = await fetch(`${this.baseUrl}${this.modelsPath}`, {
+      headers: await this.createHeaders()
+    });
     if (!response.ok) {
-      throw new Error(`LM Studio model listing failed with HTTP ${response.status}.`);
+      throw new Error(`${this.displayName} model listing failed with HTTP ${response.status}.`);
     }
     const data = (await response.json()) as OpenAICompatibleModelList;
     return (data.data ?? []).map((model) => ({
@@ -179,6 +210,55 @@ export class LMStudioOpenAIAdapter implements ModelAdapter {
       displayName: model.id,
       provider: this.provider
     }));
+  }
+
+  private async createHeaders(): Promise<Record<string, string>> {
+    const apiKey = this.apiKey ?? await this.getApiKey?.();
+    return {
+      "content-type": "application/json",
+      ...this.defaultHeaders,
+      ...(apiKey === undefined || apiKey.length === 0 ? {} : { authorization: `Bearer ${apiKey}` })
+    };
+  }
+}
+
+export class LMStudioOpenAIAdapter extends OpenAICompatibleAdapter {
+  constructor(options: LMStudioOpenAIAdapterOptions = {}) {
+    super({
+      ...options,
+      provider: "lmstudio-openai",
+      displayName: "LM Studio OpenAI-Compatible",
+      embeddings: true
+    });
+  }
+}
+
+export class OpenAIAdapter extends OpenAICompatibleAdapter {
+  constructor(options: Omit<OpenAICompatibleAdapterOptions, "provider" | "displayName" | "baseUrl"> & { baseUrl?: string } = {}) {
+    super({
+      ...options,
+      baseUrl: options.baseUrl ?? "https://api.openai.com",
+      provider: "openai",
+      displayName: "OpenAI"
+    });
+  }
+}
+
+export class OpenRouterAdapter extends OpenAICompatibleAdapter {
+  constructor(options: Omit<OpenAICompatibleAdapterOptions, "provider" | "displayName" | "baseUrl" | "chatPath" | "modelsPath"> & { baseUrl?: string } = {}) {
+    super({
+      ...options,
+      baseUrl: options.baseUrl ?? "https://openrouter.ai/api",
+      provider: "openrouter",
+      displayName: "OpenRouter",
+      chatPath: "/v1/chat/completions",
+      modelsPath: "/v1/models",
+      defaultHeaders: {
+        "HTTP-Referer": "https://github.com/buildr",
+        "X-OpenRouter-Title": "Buildr",
+        ...(options.defaultHeaders ?? {})
+      }
+    });
   }
 }
 

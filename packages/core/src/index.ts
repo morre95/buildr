@@ -21,6 +21,7 @@ export * from "./permissions/policy.js";
 export * from "./plans/schema.js";
 export * from "./providers/lmStudioNative.js";
 export * from "./providers/lmStudioOpenAI.js";
+export * from "./providers/anthropic.js";
 export * from "./providers/ollama.js";
 export * from "./providers/errors.js";
 export * from "./rules/ruleEngine.js";

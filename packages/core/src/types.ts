@@ -3,6 +3,7 @@ export type ProviderId =
   | "lmstudio-openai"
   | "lmstudio-native"
   | "openai-compatible"
+  | "openrouter"
   | "anthropic"
   | "openai";
 

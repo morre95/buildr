@@ -1,7 +1,8 @@
 import { DefaultPermissionPolicy, type PermissionPolicy } from "../permissions/policy.js";
 import { createDefaultPlan, normalizePlan, validatePlan, type BuildrPlan } from "../plans/schema.js";
+import { AnthropicAdapter } from "../providers/anthropic.js";
 import { LMStudioNativeAdapter } from "../providers/lmStudioNative.js";
-import { LMStudioOpenAIAdapter } from "../providers/lmStudioOpenAI.js";
+import { LMStudioOpenAIAdapter, OpenAIAdapter, OpenAICompatibleAdapter, OpenRouterAdapter } from "../providers/lmStudioOpenAI.js";
 import { OllamaAdapter } from "../providers/ollama.js";
 import type { ChatMessage, ModelAdapter, ProviderId } from "../types.js";
 import { providerContextWarnings, providerErrorMessage } from "../providers/errors.js";
@@ -15,6 +16,8 @@ export interface BuildrCoreOptions {
 export interface ProviderConfig {
   provider: ProviderId;
   baseUrl?: string;
+  apiKey?: string;
+  getApiKey?: () => Promise<string | undefined>;
 }
 
 export interface ModelPlanResult {
@@ -162,13 +165,34 @@ export class BuildrCore {
       case "ollama":
         return new OllamaAdapter(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl });
       case "lmstudio-openai":
-      case "openai-compatible":
         return new LMStudioOpenAIAdapter(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl });
+      case "openai-compatible":
+        return new OpenAICompatibleAdapter({
+          ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+          ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
+          ...(config.getApiKey === undefined ? {} : { getApiKey: config.getApiKey }),
+          provider: "openai-compatible"
+        });
       case "lmstudio-native":
         return new LMStudioNativeAdapter(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl });
-      case "anthropic":
       case "openai":
-        throw new Error(`${config.provider} adapter is not implemented in this local-first build.`);
+        return new OpenAIAdapter({
+          ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+          ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
+          ...(config.getApiKey === undefined ? {} : { getApiKey: config.getApiKey })
+        });
+      case "openrouter":
+        return new OpenRouterAdapter({
+          ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+          ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
+          ...(config.getApiKey === undefined ? {} : { getApiKey: config.getApiKey })
+        });
+      case "anthropic":
+        return new AnthropicAdapter({
+          ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+          ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
+          ...(config.getApiKey === undefined ? {} : { getApiKey: config.getApiKey })
+        });
     }
   }
 }

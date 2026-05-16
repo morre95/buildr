@@ -1461,7 +1461,28 @@ async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContext
         ...(feedback === undefined ? {} : { feedback })
       }
     }), validateCoderOutput);
-    const patches = await createValidatedPatches(coder.data, files);
+    let patches: TextPatch[];
+    try {
+      patches = await createValidatedPatches(coder.data, files);
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
+      events.push({
+        id: `agent:coder:${task.id}:${attempt}:invalid-diff`,
+        title: `Coder: ${task.title}`,
+        status: "failed",
+        tool: "agent_coder",
+        summary: `Coder returned invalid diffs: ${summary}`,
+        warnings: coder.warnings
+      });
+      feedback = [
+        "Your previous diffs failed deterministic patch validation.",
+        summary,
+        "Regenerate the same task as valid structured diffs.",
+        "Every hunk line must start with exactly one of: space for context, + for additions, - for removals.",
+        "For a new file, every content line in the hunk must be prefixed with '+'."
+      ].join("\n");
+      continue;
+    }
     const formattedDiff = patches.map((patch) => formatPatchForWorkspace(patch)).join("\n\n");
     const coderResult: AgentCoderPipelineResult = {
       taskId: task.id,

@@ -82,6 +82,23 @@ describe("deterministic agent contracts", () => {
     expect(() => applyAgentFileDiff(current, diff)).toThrow("removal mismatch");
   });
 
+  it("normalizes raw new-file hunk lines into additions", () => {
+    const current = "";
+    const diff: AgentFileDiff = {
+      path: "index.html",
+      beforeHash: hashText(current),
+      hunks: [{
+        oldStart: 0,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 2,
+        lines: ["<!doctype html>", "<canvas></canvas>"]
+      }]
+    };
+
+    expect(applyAgentFileDiff(current, diff)).toBe("<!doctype html>\n<canvas></canvas>\n");
+  });
+
   it("formats validated patches as git-style diffs", () => {
     const current = "one\ntwo\n";
     const diff: AgentFileDiff = {

@@ -257,9 +257,10 @@ export function applyAgentFileDiff(current: string, diff: AgentFileDiff): string
   }
   const hadTrailingNewline = current.endsWith("\n");
   const lines = current.length === 0 ? [] : current.replace(/\n$/u, "").split("\n");
+  const hunks = normalizeAgentDiffHunks(current, diff);
   let offset = 0;
 
-  for (const hunk of diff.hunks) {
+  for (const hunk of hunks) {
     const start = hunk.oldStart <= 0 ? 0 : hunk.oldStart - 1 + offset;
     const replacement: string[] = [];
     let cursor = start;
@@ -305,6 +306,25 @@ export function applyAgentFileDiff(current: string, diff: AgentFileDiff): string
 
 export function createTextPatchFromAgentDiff(current: string, diff: AgentFileDiff, absolutePath: string): TextPatch {
   return createTextPatch(absolutePath, current, applyAgentFileDiff(current, diff));
+}
+
+function normalizeAgentDiffHunks(current: string, diff: AgentFileDiff): AgentDiffHunk[] {
+  if (current.length !== 0) {
+    return diff.hunks;
+  }
+  return diff.hunks.map((hunk) => {
+    if (hunk.oldStart !== 0 || hunk.oldLines !== 0) {
+      return hunk;
+    }
+    const lines = hunk.lines
+      .filter((line) => !line.startsWith("\\ No newline at end of file"))
+      .map((line) => line.length === 0 || (line[0] !== " " && line[0] !== "+" && line[0] !== "-") ? `+${line}` : line);
+    return {
+      ...hunk,
+      lines,
+      newLines: lines.filter((line) => line.startsWith("+") || line.startsWith(" ")).length
+    };
+  });
 }
 
 function createAgentMessages(role: AgentRole, requestId: string, instructions: string[], payload: unknown): ChatMessage[] {

@@ -96,6 +96,26 @@ describe("MainAgentSession", () => {
     expect(tracker.snapshot().blocked).toBe(true);
   });
 
+  it("does not count or block token use when the budget is unlimited", async () => {
+    const model = new MockModelAdapter(() => JSON.stringify({
+      summary: "Noop",
+      updatedContent: "noop\n"
+    }), 50);
+    const tracker = new TokenBudgetTracker({ unlimited: true });
+
+    await expect(tracker.prepareModelCall({
+      adapter: model,
+      modelId: "mock",
+      label: "test",
+      messages: [{ role: "user", content: "large prompt" }]
+    })).resolves.toEqual({ inputTokens: 0, approximate: false });
+
+    const snapshot = tracker.snapshot();
+    expect(snapshot.unlimited).toBe(true);
+    expect(snapshot.blocked).toBe(false);
+    expect(snapshot.totalTokens).toBe(0);
+  });
+
   it("keeps sub-agent prompts focused and marks empty targets as new-file work", async () => {
     const model = new MockModelAdapter((path) => JSON.stringify({
       summary: `Created ${path}.`,

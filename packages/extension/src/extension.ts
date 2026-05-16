@@ -559,6 +559,15 @@ function createConfiguredCore(): BuildrCore {
   return new BuildrCore({ model });
 }
 
+function getConfiguredProviderAndBaseUrl(): { provider: ProviderId; baseUrl: string } {
+  const modelConfig = vscode.workspace.getConfiguration("buildr.model");
+  const provider = parseProvider(modelConfig.get<string>("provider", "ollama"));
+  const baseUrl = provider === "lmstudio-openai" || provider === "lmstudio-native" || provider === "openai-compatible"
+    ? modelConfig.get<string>("lmStudioBaseUrl", "http://127.0.0.1:1234")
+    : modelConfig.get<string>("ollamaBaseUrl", "http://127.0.0.1:11434");
+  return { provider, baseUrl };
+}
+
 function getConfiguredModelId(): string {
   const modelConfig = vscode.workspace.getConfiguration("buildr.model");
   return modelConfig.get<string>("modelId", "qwen2.5-coder");
@@ -2249,7 +2258,7 @@ async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWri
     title: "Run parallel sub-agents",
     status: report.patchProposals.length > 0 ? "completed" : "failed",
     tool: "main_agent",
-    summary: `Ran ${report.subAgents.length} sub-agent(s); received ${report.patchProposals.length} patch proposal(s). Tokens: ${report.tokenBudget.totalTokens}/${report.tokenBudget.hardTokenCap}, estimated cost $${report.tokenBudget.estimatedCostUsd.toFixed(6)}.`,
+    summary: `Ran ${report.subAgents.length} sub-agent(s); received ${report.patchProposals.length} patch proposal(s). ${formatTokenBudgetSummary(report.tokenBudget)}`,
     warnings: report.warnings
   });
 
@@ -2519,6 +2528,10 @@ function getMaxParallelSubAgents(): number {
 }
 
 function getTokenBudgetConfig(): TokenBudgetConfig {
+  if (isConfiguredLocalModel()) {
+    return { unlimited: true };
+  }
+
   const contextConfig = vscode.workspace.getConfiguration("buildr.context");
   const costConfig = vscode.workspace.getConfiguration("buildr.cost");
   return {
@@ -2529,6 +2542,35 @@ function getTokenBudgetConfig(): TokenBudgetConfig {
       outputUsdPerMillion: costConfig.get<number>("outputUsdPerMillion", 0)
     }
   };
+}
+
+function formatTokenBudgetSummary(state: TokenBudgetState): string {
+  if (state.unlimited) {
+    return "Token budget unlimited for local model.";
+  }
+  return `Tokens: ${state.totalTokens}/${state.hardTokenCap}, estimated cost $${state.estimatedCostUsd.toFixed(6)}.`;
+}
+
+function isConfiguredLocalModel(): boolean {
+  const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
+  return provider === "ollama"
+    || provider === "lmstudio-openai"
+    || provider === "lmstudio-native"
+    || isLocalBaseUrl(baseUrl);
+}
+
+function isLocalBaseUrl(value: string): boolean {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === "localhost"
+      || hostname === "127.0.0.1"
+      || hostname === "::1"
+      || hostname.startsWith("192.168.")
+      || hostname.startsWith("10.")
+      || /^172\.(1[6-9]|2\d|3[0-1])\./u.test(hostname);
+  } catch {
+    return false;
+  }
 }
 
 function createFinalReportSummary(): string {

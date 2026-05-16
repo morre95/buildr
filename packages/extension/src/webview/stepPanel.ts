@@ -863,6 +863,12 @@ function renderTokenBudget(tokenBudget: TokenBudgetState | undefined): string {
   if (tokenBudget === undefined) {
     return "";
   }
+  if (tokenBudget.unlimited) {
+    return `<section aria-label="Token budget">
+      <h2>Token Budget</h2>
+      <p>Unlimited for local model.</p>
+    </section>`;
+  }
   const cost = tokenBudget.estimatedCostUsd.toFixed(6);
   const approximate = tokenBudget.approximate ? " approximate" : "";
   const warnings = tokenBudget.warnings.length === 0

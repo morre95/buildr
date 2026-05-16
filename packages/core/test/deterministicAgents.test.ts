@@ -99,6 +99,40 @@ describe("deterministic agent contracts", () => {
     expect(applyAgentFileDiff(current, diff)).toBe("<!doctype html>\n<canvas></canvas>\n");
   });
 
+  it("normalizes raw new-file hunk lines when oldStart is one", () => {
+    const current = "";
+    const diff: AgentFileDiff = {
+      path: "index.html",
+      beforeHash: hashText(current),
+      hunks: [{
+        oldStart: 1,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 2,
+        lines: ["<!doctype html>", "<canvas></canvas>"]
+      }]
+    };
+
+    expect(applyAgentFileDiff(current, diff)).toBe("<!doctype html>\n<canvas></canvas>\n");
+  });
+
+  it("normalizes indented raw new-file lines as additions", () => {
+    const current = "";
+    const diff: AgentFileDiff = {
+      path: "index.html",
+      beforeHash: hashText(current),
+      hunks: [{
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 2,
+        lines: ["<script>", "  const speed = 120;", "</script>"]
+      }]
+    };
+
+    expect(applyAgentFileDiff(current, diff)).toBe("<script>\n  const speed = 120;\n</script>\n");
+  });
+
   it("formats validated patches as git-style diffs", () => {
     const current = "one\ntwo\n";
     const diff: AgentFileDiff = {

@@ -1459,7 +1459,9 @@ async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContext
     throw new Error("Agent pipeline state is not initialized.");
   }
   let feedback: string | undefined;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  let lastFailure: string | undefined;
+  const maxAttempts = getCoderRetryLimit();
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     agentPipelineState.retryCount[task.id] = attempt - 1;
     const files = await createFileSnapshots(task.targetFiles);
     const coder = await invokeJsonAgent("coder", createCoderMessages({
@@ -1483,6 +1485,7 @@ async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContext
         summary: `Coder returned invalid diffs: ${summary}`,
         warnings: coder.warnings
       });
+      lastFailure = summary;
       feedback = [
         "Your previous diffs failed deterministic patch validation.",
         summary,
@@ -1534,9 +1537,17 @@ async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContext
       return coderResult;
     }
     feedback = issues.join("\n");
+    lastFailure = feedback;
   }
 
-  throw new Error(`Coder retry budget exhausted for ${task.title}.`);
+  throw new Error([
+    `Coder validation retry limit exhausted for ${task.title} after ${maxAttempts} attempt(s).`,
+    lastFailure === undefined ? "" : `Last failure: ${lastFailure}`
+  ].filter((part) => part.length > 0).join("\n"));
+}
+
+function getCoderRetryLimit(): number {
+  return isConfiguredLocalModel() ? 5 : 3;
 }
 
 async function createValidatedPatches(coderOutput: CoderOutput, snapshots: AgentFileSnapshot[]): Promise<TextPatch[]> {

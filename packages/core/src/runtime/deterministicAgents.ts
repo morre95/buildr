@@ -313,16 +313,15 @@ function normalizeAgentDiffHunks(current: string, diff: AgentFileDiff): AgentDif
     return diff.hunks;
   }
   return diff.hunks.map((hunk) => {
-    if (hunk.oldStart !== 0 || hunk.oldLines !== 0) {
-      return hunk;
-    }
     const lines = hunk.lines
       .filter((line) => !line.startsWith("\\ No newline at end of file"))
-      .map((line) => line.length === 0 || (line[0] !== " " && line[0] !== "+" && line[0] !== "-") ? `+${line}` : line);
+      .map((line) => line.startsWith("+") ? line : `+${line}`);
     return {
       ...hunk,
+      oldStart: 0,
+      oldLines: 0,
       lines,
-      newLines: lines.filter((line) => line.startsWith("+") || line.startsWith(" ")).length
+      newLines: lines.length
     };
   });
 }

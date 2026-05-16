@@ -283,6 +283,7 @@ function renderState(state: StepPanelState): string {
     .join("");
   const pending = state.pendingApproval === undefined ? "" : renderPendingApproval(state.pendingApproval);
   const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
+  const activity = renderActivity(state);
   const stream = renderStream(state.stream);
   const tokenBudget = renderTokenBudget(state.tokenBudget);
   const agentPipeline = renderAgentPipeline(state.agentPipeline);
@@ -370,6 +371,47 @@ function renderState(state: StepPanelState): string {
       section, .message {
         border-bottom: 1px solid var(--vscode-panel-border);
         padding: 12px 0;
+      }
+
+      .activity {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--vscode-foreground);
+      }
+
+      .activity-spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid color-mix(in srgb, var(--vscode-descriptionForeground) 36%, transparent);
+        border-top-color: var(--vscode-progressBar-background);
+        border-radius: 50%;
+        flex: 0 0 auto;
+        animation: buildr-spin 0.85s linear infinite;
+      }
+
+      .activity-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--vscode-notificationsWarningIcon-foreground);
+        flex: 0 0 auto;
+      }
+
+      .activity strong {
+        display: block;
+        font-weight: 600;
+      }
+
+      .activity small {
+        display: block;
+        margin-top: 2px;
+      }
+
+      @keyframes buildr-spin {
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       details.plan-history {
@@ -593,6 +635,7 @@ function renderState(state: StepPanelState): string {
         ${sessions}
       </header>
       <div class="content">
+        ${activity}
         ${messages}
         ${tokenBudget}
         ${agentPipeline}
@@ -849,6 +892,64 @@ function renderModelState(model: WebviewModelState | undefined): string {
   return `<div class="model-state" title="${escapeHtml(`${model.provider} · ${model.modelId} · ${model.baseUrl}`)}">
     ${escapeHtml(model.provider)} · ${escapeHtml(model.modelId)} · ${escapeHtml(budget)}
   </div>`;
+}
+
+function renderActivity(state: StepPanelState): string {
+  const pending = state.pendingApproval !== undefined;
+  const phase = state.agentPipeline?.phase;
+  const agentWorking = phase === "planning" || phase === "coding" || phase === "reviewing" || phase === "testing";
+  const streamActive = state.stream?.active === true;
+
+  if (!pending && !state.running && !streamActive && !agentWorking) {
+    return "";
+  }
+
+  const label = pending ? "Waiting for your approval..." : activityLabel(state, phase);
+  const detail = pending
+    ? state.pendingApproval?.title ?? "Review the pending action below."
+    : activityDetail(state, phase);
+  const indicator = pending
+    ? `<span class="activity-dot" aria-hidden="true"></span>`
+    : `<span class="activity-spinner" aria-hidden="true"></span>`;
+
+  return `<section class="activity" role="status" aria-live="polite">
+    ${indicator}
+    <div>
+      <strong>${escapeHtml(label)}</strong>
+      <small>${escapeHtml(detail)}</small>
+    </div>
+  </section>`;
+}
+
+function activityLabel(state: StepPanelState, phase: string | undefined): string {
+  if (state.stream?.active === true) {
+    return "LLM is creating a plan...";
+  }
+  switch (phase) {
+    case "planning":
+      return "LLM is planning the workflow...";
+    case "coding":
+      return "LLM is writing changes...";
+    case "reviewing":
+      return "LLM is reviewing changes...";
+    case "testing":
+      return "LLM is preparing verification...";
+    default:
+      return "Buildr is working...";
+  }
+}
+
+function activityDetail(state: StepPanelState, phase: string | undefined): string {
+  if (state.stream?.status !== undefined && state.stream.status.trim().length > 0) {
+    return state.stream.status;
+  }
+  if (state.agentPipeline?.plan !== undefined && phase !== undefined) {
+    const task = state.agentPipeline.plan.tasks[state.agentPipeline.currentTaskIndex];
+    if (task !== undefined) {
+      return task.title;
+    }
+  }
+  return "Waiting for the model response.";
 }
 
 function renderPlans(history: PlanHistoryEntry[], activePlan: BuildrPlan | undefined, canRunPlan: boolean, running: boolean): string {

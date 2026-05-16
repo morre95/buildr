@@ -15,6 +15,7 @@ export async function openBuildrSettings(): Promise<void> {
     "Hard token cap",
     "Token warning thresholds",
     "Max parallel sub-agents",
+    "Agent retry limit",
     "Input token cost",
     "Output token cost",
     "Default write policy",
@@ -71,6 +72,9 @@ export async function openBuildrSettings(): Promise<void> {
       break;
     case "Max parallel sub-agents":
       await updateNumber("buildr.agents", "maxParallelSubAgents", "Maximum number of sub-agents that may run in parallel.", target);
+      break;
+    case "Agent retry limit":
+      await updateAgentRetryLimit(target);
       break;
     case "Input token cost":
       await updateNumber("buildr.cost", "inputUsdPerMillion", "Estimated input-token cost in USD per million tokens.", target);
@@ -133,6 +137,49 @@ async function updateNumber(section: string, key: string, prompt: string, target
   });
   if (value !== undefined) {
     await config.update(key, Number(value), target);
+  }
+}
+
+async function updateNonNegativeInteger(section: string, key: string, prompt: string, target: vscode.ConfigurationTarget): Promise<void> {
+  const config = vscode.workspace.getConfiguration(section);
+  const value = await vscode.window.showInputBox({
+    title: `Buildr: ${key}`,
+    value: String(config.get<number>(key) ?? 0),
+    prompt,
+    ignoreFocusOut: true,
+    validateInput: (input) => {
+      const parsed = Number(input);
+      return Number.isInteger(parsed) && parsed >= 0 ? undefined : "Enter a non-negative integer.";
+    }
+  });
+  if (value !== undefined) {
+    await config.update(key, Number(value), target);
+  }
+}
+
+async function updateAgentRetryLimit(target: vscode.ConfigurationTarget): Promise<void> {
+  const config = vscode.workspace.getConfiguration("buildr.agents");
+  const current = config.get<number>("coderReviewRetryLimit", 0);
+  const selected = await vscode.window.showQuickPick([
+    {
+      label: "Auto",
+      description: "5 local attempts, 3 cloud attempts"
+    },
+    {
+      label: "Custom value",
+      description: current > 0 ? `Current: ${current}` : "Set a fixed attempt limit"
+    }
+  ], {
+    title: "Buildr: coderReviewRetryLimit",
+    placeHolder: current > 0 ? `Current: ${current}` : "Current: Auto"
+  });
+
+  if (selected?.label === "Auto") {
+    await config.update("coderReviewRetryLimit", 0, target);
+    return;
+  }
+  if (selected?.label === "Custom value") {
+    await updateNonNegativeInteger("buildr.agents", "coderReviewRetryLimit", "Maximum coder/reviewer attempts per agent task. Enter 0 for Auto (5 local, 3 cloud).", target);
   }
 }
 

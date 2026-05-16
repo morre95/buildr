@@ -156,6 +156,12 @@
           "maximum": 8,
           "description": "Maximum number of Buildr sub-agents that may run in parallel."
         },
+        "buildr.agents.coderReviewRetryLimit": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum coder/reviewer attempts per agent task. Set to 0 for Auto: 5 attempts for local models and 3 attempts for cloud models."
+        },
         "buildr.cost.inputUsdPerMillion": {
           "type": "number",
           "default": 0,

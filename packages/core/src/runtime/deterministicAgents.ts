@@ -94,6 +94,12 @@ export const REVIEWER_RUBRIC = [
   "Tests present: the change includes or requests appropriate verification for the task."
 ].join("\n");
 
+export function resolveCoderRetryLimit(configuredLimit: unknown, isLocalModel: boolean): number {
+  return typeof configuredLimit === "number" && Number.isInteger(configuredLimit) && configuredLimit > 0
+    ? configuredLimit
+    : isLocalModel ? 5 : 3;
+}
+
 export function parseAgentEnvelope<TData>(
   rawResponse: string,
   role: AgentRole,

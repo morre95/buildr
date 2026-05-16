@@ -5,6 +5,7 @@ import {
   formatTextPatchAsGitDiff,
   hashText,
   parseAgentEnvelope,
+  resolveCoderRetryLimit,
   validateCoderOutput,
   validateReviewerOutput,
   type AgentFileDiff
@@ -80,6 +81,15 @@ describe("deterministic agent contracts", () => {
     );
 
     expect(parsed.data.diffs[0]?.hunks[0]?.lines).toEqual(["+(() => {", "+})();"]);
+  });
+
+  it("resolves coder retry limits from explicit or auto settings", () => {
+    expect(resolveCoderRetryLimit(7, true)).toBe(7);
+    expect(resolveCoderRetryLimit(7, false)).toBe(7);
+    expect(resolveCoderRetryLimit(0, true)).toBe(5);
+    expect(resolveCoderRetryLimit(0, false)).toBe(3);
+    expect(resolveCoderRetryLimit(2.5, true)).toBe(5);
+    expect(resolveCoderRetryLimit("4", false)).toBe(3);
   });
 
   it("detects hunk conflicts", () => {

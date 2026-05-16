@@ -22,6 +22,7 @@ import {
   readFileTool,
   rankWorkspaceContext,
   requireTrustedWorkspace,
+  resolveCoderRetryLimit,
   runCompletionGate,
   runVerificationCommand,
   searchCodebaseTool,
@@ -120,7 +121,7 @@ interface WorkspaceContextSummary {
   warnings: string[];
 }
 
-type AgentPipelinePhase = "idle" | "planning" | "coding" | "reviewing" | "testing" | "complete" | "failed";
+type AgentPipelinePhase = "idle" | "planning" | "coding" | "reviewing" | "testing" | "complete" | "blocked" | "failed";
 
 interface AgentPipelineState {
   phase: AgentPipelinePhase;
@@ -1482,8 +1483,8 @@ async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: stri
     });
     renderCurrentState(stepPanel);
 
-    await createReviewedPatchApprovals(architect.data.plan, context, stepPanel);
-    if (pendingApproval === undefined && queuedPatchApprovals.length === 0) {
+    const completed = await createReviewedPatchApprovals(architect.data.plan, context, stepPanel);
+    if (completed && pendingApproval === undefined && queuedPatchApprovals.length === 0) {
       await queueAgentTestGeneration(stepPanel);
     }
   } catch (error) {
@@ -1525,8 +1526,8 @@ async function runDeterministicAgentWorkflowFromCurrentPlan(stepPanel: StepPanel
   };
   events.push(createContextInspectionEvent(context, "Agent repo context"));
   try {
-    await createReviewedPatchApprovals(plan, context, stepPanel);
-    if (pendingApproval === undefined && queuedPatchApprovals.length === 0) {
+    const completed = await createReviewedPatchApprovals(plan, context, stepPanel);
+    if (completed && pendingApproval === undefined && queuedPatchApprovals.length === 0) {
       await queueAgentTestGeneration(stepPanel);
     }
   } catch (error) {
@@ -1534,15 +1535,18 @@ async function runDeterministicAgentWorkflowFromCurrentPlan(stepPanel: StepPanel
   }
 }
 
-async function createReviewedPatchApprovals(plan: AgentPlan, context: WorkspaceContextSummary, stepPanel: StepPanel): Promise<void> {
+async function createReviewedPatchApprovals(plan: AgentPlan, context: WorkspaceContextSummary, stepPanel: StepPanel): Promise<boolean> {
   if (agentPipelineState === undefined) {
-    return;
+    return false;
   }
   for (const [taskIndex, task] of plan.tasks.entries()) {
     agentPipelineState.phase = "coding";
     agentPipelineState.currentTaskIndex = taskIndex;
     renderCurrentState(stepPanel);
-    const result = await runCoderReviewLoop(task, context);
+    const result = await runCoderReviewLoop(task, context, stepPanel);
+    if (result === undefined) {
+      return false;
+    }
     agentPipelineState.coderResults.push(result);
     queuedPatchApprovals.push(...result.patches.map((patch) => createAgentPatchApproval(task, result, patch)));
     renderCurrentState(stepPanel);
@@ -1552,16 +1556,36 @@ async function createReviewedPatchApprovals(plan: AgentPlan, context: WorkspaceC
   if (pendingApproval !== undefined) {
     events.push(eventFromPermissionDecision(pendingApproval, "ask"));
   }
+  return true;
 }
 
-async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContextSummary): Promise<AgentCoderPipelineResult> {
+async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContextSummary, stepPanel: StepPanel): Promise<AgentCoderPipelineResult | undefined> {
   if (agentPipelineState === undefined) {
     throw new Error("Agent pipeline state is not initialized.");
   }
   let feedback: string | undefined;
   let lastFailure: string | undefined;
   const maxAttempts = getCoderRetryLimit();
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  let retryLimitBypassed = false;
+  for (let attempt = 1; ; attempt += 1) {
+    if (!retryLimitBypassed && attempt > maxAttempts) {
+      const shouldContinue = await promptToContinueAfterRetryLimit(task, maxAttempts, lastFailure, stepPanel);
+      if (!shouldContinue) {
+        blockAgentPipelineOnRetryLimit(task, maxAttempts, lastFailure);
+        renderCurrentState(stepPanel);
+        return undefined;
+      }
+      retryLimitBypassed = true;
+      events.push({
+        id: `agent:coder:${task.id}:${Date.now()}:retry-continued`,
+        title: `Continue ${task.title}`,
+        status: "running",
+        tool: "agent_orchestrator",
+        summary: `User continued after ${maxAttempts} attempt(s); retry limit is disabled for this task.`,
+        warnings: []
+      });
+      renderCurrentState(stepPanel);
+    }
     agentPipelineState.retryCount[task.id] = attempt - 1;
     const files = await createFileSnapshots(task.targetFiles);
     const coder = await invokeJsonAgent("coder", createCoderMessages({
@@ -1640,14 +1664,58 @@ async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContext
     lastFailure = feedback;
   }
 
-  throw new Error([
-    `Coder validation retry limit exhausted for ${task.title} after ${maxAttempts} attempt(s).`,
+}
+
+async function promptToContinueAfterRetryLimit(
+  task: AgentPlanTask,
+  maxAttempts: number,
+  lastFailure: string | undefined,
+  stepPanel: StepPanel
+): Promise<boolean> {
+  const failure = lastFailure === undefined ? "" : ` Last failure: ${lastFailure.slice(0, 500)}`;
+  events.push({
+    id: `agent:coder:${task.id}:${Date.now()}:retry-limit`,
+    title: `Retry limit reached: ${task.title}`,
+    status: "running",
+    tool: "agent_orchestrator",
+    summary: `Coder/reviewer retry limit reached after ${maxAttempts} attempt(s). Waiting for user decision.`,
+    warnings: lastFailure === undefined ? [] : [lastFailure]
+  });
+  renderCurrentState(stepPanel);
+  const action = await vscode.window.showWarningMessage(
+    `Buildr reached the agent retry limit for "${task.title}" after ${maxAttempts} attempt(s).${failure}`,
+    "Continue",
+    "Stop"
+  );
+  return action === "Continue";
+}
+
+function blockAgentPipelineOnRetryLimit(task: AgentPlanTask, maxAttempts: number, lastFailure: string | undefined): void {
+  const summary = [
+    `Agent workflow stopped after reaching the retry limit for ${task.title} (${maxAttempts} attempt(s)).`,
     lastFailure === undefined ? "" : `Last failure: ${lastFailure}`
-  ].filter((part) => part.length > 0).join("\n"));
+  ].filter((part) => part.length > 0).join("\n");
+  if (agentPipelineState !== undefined) {
+    agentPipelineState.phase = "blocked";
+    agentPipelineState.finalSummary = summary;
+    agentPipelineState.warnings.push(summary);
+  }
+  events.push({
+    id: `agent:coder:${task.id}:${Date.now()}:retry-stopped`,
+    title: `Stopped ${task.title}`,
+    status: "blocked",
+    tool: "agent_orchestrator",
+    summary,
+    warnings: []
+  });
+  messages.push({ role: "assistant", text: summary });
 }
 
 function getCoderRetryLimit(): number {
-  return isConfiguredLocalModel() ? 5 : 3;
+  return resolveCoderRetryLimit(
+    vscode.workspace.getConfiguration("buildr.agents").get<number>("coderReviewRetryLimit", 0),
+    isConfiguredLocalModel()
+  );
 }
 
 async function createValidatedPatches(coderOutput: CoderOutput, snapshots: AgentFileSnapshot[]): Promise<TextPatch[]> {
@@ -2085,7 +2153,7 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
         return;
       }
 
-      if (agentPipelineState !== undefined && agentPipelineState.phase !== "complete" && agentPipelineState.phase !== "failed") {
+      if (agentPipelineState !== undefined && agentPipelineState.phase !== "complete" && agentPipelineState.phase !== "blocked" && agentPipelineState.phase !== "failed") {
         await queueAgentTestGeneration(stepPanel);
         return;
       }

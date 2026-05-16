@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AnthropicAdapter, BuildrCore, OpenAIAdapter, OpenRouterAdapter } from "../src/index.js";
+import { AnthropicAdapter, BuildrCore, OpenAIAdapter, OpenAICompatibleAdapter, OpenRouterAdapter } from "../src/index.js";
 
 describe("cloud provider adapters", () => {
   afterEach(() => {
@@ -29,6 +29,7 @@ describe("cloud provider adapters", () => {
 
     expect(requests[0]!.url).toBe("https://api.openai.com/v1/chat/completions");
     expect(requests[0]!.init.headers).toMatchObject({ authorization: "Bearer sk-test" });
+    expect(JSON.parse(requests[0]!.init.body as string)).not.toHaveProperty("temperature");
     expect(chunks).toEqual(["hi"]);
   });
 
@@ -47,6 +48,39 @@ describe("cloud provider adapters", () => {
       "HTTP-Referer": "https://github.com/buildr",
       "X-OpenRouter-Title": "Buildr"
     });
+    expect(JSON.parse(requests[0]!.init.body as string)).not.toHaveProperty("temperature");
+  });
+
+  it("retries OpenAI-compatible requests without temperature when a model rejects it", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      requests.push({ url, init });
+      if (requests.length === 1) {
+        return new Response(JSON.stringify({
+          error: { message: "Unsupported value: 'temperature' does not support 0.1 with this model. Only the default (1) value is supported." }
+        }), { status: 400 });
+      }
+      return new Response(new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: null }] })}\n\n`));
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+        }
+      }), { status: 200 });
+    }));
+    const adapter = new OpenAICompatibleAdapter({ baseUrl: "https://example.test", apiKey: "key" });
+
+    const chunks: string[] = [];
+    for await (const delta of adapter.chat({ model: "reasoning-model", messages: [] })) {
+      if (delta.type === "text") {
+        chunks.push(delta.content ?? "");
+      }
+    }
+
+    expect(JSON.parse(requests[0]!.init.body as string)).toHaveProperty("temperature", 0.1);
+    expect(JSON.parse(requests[1]!.init.body as string)).not.toHaveProperty("temperature");
+    expect(chunks).toEqual(["ok"]);
   });
 
   it("lists Anthropic models and streams text deltas", async () => {

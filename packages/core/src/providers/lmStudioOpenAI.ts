@@ -49,6 +49,7 @@ export interface OpenAICompatibleAdapterOptions {
   chatPath?: string;
   modelsPath?: string;
   embeddings?: boolean;
+  includeTemperature?: boolean;
 }
 
 export interface LMStudioOpenAIAdapterOptions {
@@ -67,6 +68,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
   private readonly chatPath: string;
   private readonly modelsPath: string;
   private readonly embeddings: boolean;
+  private readonly includeTemperature: boolean;
 
   constructor(options: OpenAICompatibleAdapterOptions = {}) {
     this.provider = options.provider ?? "openai-compatible";
@@ -79,6 +81,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
     this.chatPath = options.chatPath ?? "/v1/chat/completions";
     this.modelsPath = options.modelsPath ?? "/v1/models";
     this.embeddings = options.embeddings ?? false;
+    this.includeTemperature = options.includeTemperature ?? true;
   }
 
   async getCapabilities(): Promise<ModelCapabilities> {
@@ -97,26 +100,33 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
 
   async *chat(request: ChatRequest, options: ChatOptions = {}): AsyncIterable<ModelDelta> {
     const headers = await this.createHeaders();
-    const init: RequestInit = {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: request.model,
-        messages: request.messages.map(toOpenAIMessage),
-        stream: true,
-        temperature: request.temperature ?? 0.1,
-        tools: request.tools?.map(toOpenAIToolDefinition)
-      })
-    };
+    const init = createChatRequestInit(request, headers, this.includeTemperature);
     if (options.signal !== undefined) {
       init.signal = options.signal;
     }
 
-    const response = await fetch(`${this.baseUrl}${this.chatPath}`, init);
+    let response = await fetch(`${this.baseUrl}${this.chatPath}`, init);
     if (!response.ok) {
       const message = extractProviderErrorMessage(await readErrorResponse(response));
+      if (this.includeTemperature && isUnsupportedTemperatureError(message)) {
+        const retry = createChatRequestInit(request, headers, false);
+        if (options.signal !== undefined) {
+          retry.signal = options.signal;
+        }
+        response = await fetch(`${this.baseUrl}${this.chatPath}`, retry);
+        if (response.ok) {
+          yield* this.streamChatResponse(response);
+          return;
+        }
+        const retryMessage = extractProviderErrorMessage(await readErrorResponse(response));
+        throw createProviderError(retryMessage ?? `${this.displayName} chat failed with HTTP ${response.status}.`);
+      }
       throw createProviderError(message ?? `${this.displayName} chat failed with HTTP ${response.status}.`);
     }
+    yield* this.streamChatResponse(response);
+  }
+
+  private async *streamChatResponse(response: Response): AsyncIterable<ModelDelta> {
     if (response.body === null) {
       throw new Error(`${this.displayName} chat failed with HTTP ${response.status}.`);
     }
@@ -239,7 +249,8 @@ export class OpenAIAdapter extends OpenAICompatibleAdapter {
       ...options,
       baseUrl: options.baseUrl ?? "https://api.openai.com",
       provider: "openai",
-      displayName: "OpenAI"
+      displayName: "OpenAI",
+      includeTemperature: false
     });
   }
 }
@@ -253,6 +264,7 @@ export class OpenRouterAdapter extends OpenAICompatibleAdapter {
       displayName: "OpenRouter",
       chatPath: "/v1/chat/completions",
       modelsPath: "/v1/models",
+      includeTemperature: false,
       defaultHeaders: {
         "HTTP-Referer": "https://github.com/buildr",
         "X-OpenRouter-Title": "Buildr",
@@ -260,6 +272,28 @@ export class OpenRouterAdapter extends OpenAICompatibleAdapter {
       }
     });
   }
+}
+
+function createChatRequestInit(request: ChatRequest, headers: Record<string, string>, includeTemperature: boolean): RequestInit {
+  return {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: request.model,
+      messages: request.messages.map(toOpenAIMessage),
+      stream: true,
+      ...(includeTemperature ? { temperature: request.temperature ?? 0.1 } : {}),
+      tools: request.tools?.map(toOpenAIToolDefinition)
+    })
+  };
+}
+
+function isUnsupportedTemperatureError(message: string | undefined): boolean {
+  if (message === undefined) {
+    return false;
+  }
+  const normalized = message.toLowerCase();
+  return normalized.includes("temperature") && normalized.includes("default");
 }
 
 function toOpenAIToolDefinition(tool: ToolDefinition): Record<string, unknown> {

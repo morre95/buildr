@@ -81,7 +81,8 @@ const MAX_SAVED_AGENT_SESSIONS = 20;
 let activeAbortController: AbortController | undefined;
 let currentPlan: BuildrPlan | undefined;
 let events: ExecutionEvent[] = [];
-let pendingApproval: PendingApproval<TextPatch | TerminalApprovalPayload> | undefined;
+let pendingApproval: PendingApproval<BuildrApprovalPayload> | undefined;
+let pendingAgentRetryResolver: ((continueWorkflow: boolean) => void) | undefined;
 let queuedVerificationCommand: string | undefined;
 let queuedWriteTargets: PlanWriteTarget[] = [];
 let queuedPatchApprovals: PendingApproval<TextPatch>[] = [];
@@ -107,6 +108,15 @@ interface TerminalApprovalPayload {
   cwd: string;
   agentTestCaseId?: string;
 }
+
+interface AgentRetryApprovalPayload {
+  taskId: string;
+  taskTitle: string;
+  maxAttempts: number;
+  lastFailure?: string;
+}
+
+type BuildrApprovalPayload = TextPatch | TerminalApprovalPayload | AgentRetryApprovalPayload;
 
 interface PlanWriteTarget {
   path: string;
@@ -163,7 +173,7 @@ interface PersistedAgentSession {
 interface PersistedAgentSessionState {
   currentPlan?: BuildrPlan;
   events: ExecutionEvent[];
-  pendingApproval?: PendingApproval<TextPatch | TerminalApprovalPayload>;
+  pendingApproval?: PendingApproval<BuildrApprovalPayload>;
   queuedVerificationCommand?: string;
   queuedWriteTargets: PlanWriteTarget[];
   queuedPatchApprovals: Array<PendingApproval<TextPatch>>;
@@ -1392,6 +1402,11 @@ function stopActiveOperation(stepPanel: StepPanel): void {
   activeAbortController?.abort();
   activeAbortController = undefined;
   isRunning = false;
+  if (pendingApproval?.tool === "agent_retry") {
+    pendingApproval = undefined;
+  }
+  pendingAgentRetryResolver?.(false);
+  pendingAgentRetryResolver = undefined;
   queuedWriteTargets = [];
   queuedPatchApprovals = [];
   events.push({
@@ -1672,22 +1687,43 @@ async function promptToContinueAfterRetryLimit(
   lastFailure: string | undefined,
   stepPanel: StepPanel
 ): Promise<boolean> {
-  const failure = lastFailure === undefined ? "" : ` Last failure: ${lastFailure.slice(0, 500)}`;
+  pendingApproval = createAgentRetryApproval(task, maxAttempts, lastFailure);
   events.push({
     id: `agent:coder:${task.id}:${Date.now()}:retry-limit`,
     title: `Retry limit reached: ${task.title}`,
-    status: "running",
+    status: "pending_approval",
     tool: "agent_orchestrator",
     summary: `Coder/reviewer retry limit reached after ${maxAttempts} attempt(s). Waiting for user decision.`,
     warnings: lastFailure === undefined ? [] : [lastFailure]
   });
+  events.push(eventFromPermissionDecision(pendingApproval, "ask"));
   renderCurrentState(stepPanel);
-  const action = await vscode.window.showWarningMessage(
-    `Buildr reached the agent retry limit for "${task.title}" after ${maxAttempts} attempt(s).${failure}`,
-    "Continue",
-    "Stop"
-  );
-  return action === "Continue";
+  return new Promise((resolvePromise) => {
+    pendingAgentRetryResolver = resolvePromise;
+  });
+}
+
+function createAgentRetryApproval(task: AgentPlanTask, maxAttempts: number, lastFailure: string | undefined): PendingApproval<AgentRetryApprovalPayload> {
+  const details = [
+    `Buildr reached the configured coder/reviewer retry limit for ${task.title}.`,
+    `Attempts: ${maxAttempts}`,
+    "",
+    "Continue disables the retry cap for this task only. Stop ends the agent workflow without treating it as a crash.",
+    lastFailure === undefined ? "" : `Last failure:\n${lastFailure}`
+  ].filter((part) => part.length > 0).join("\n");
+  return {
+    id: `approval:agent_retry:${Date.now()}:${task.id}`,
+    title: `Continue ${task.title}?`,
+    tool: "agent_retry",
+    risk: "medium",
+    details,
+    payload: {
+      taskId: task.id,
+      taskTitle: task.title,
+      maxAttempts,
+      ...(lastFailure === undefined ? {} : { lastFailure })
+    }
+  };
 }
 
 function blockAgentPipelineOnRetryLimit(task: AgentPlanTask, maxAttempts: number, lastFailure: string | undefined): void {
@@ -2121,6 +2157,15 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
 
   const approval = pendingApproval;
   pendingApproval = undefined;
+
+  if (approval.tool === "agent_retry") {
+    const continueWorkflow = message.decision === "approve";
+    events.push(eventFromPermissionDecision(approval, continueWorkflow ? "allow" : "deny"));
+    pendingAgentRetryResolver?.(continueWorkflow);
+    pendingAgentRetryResolver = undefined;
+    renderCurrentState(stepPanel);
+    return;
+  }
 
   if (message.decision === "deny") {
     events.push(eventFromPermissionDecision(approval, "deny"));

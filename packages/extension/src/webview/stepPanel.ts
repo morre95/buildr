@@ -965,14 +965,17 @@ function renderAgentPipeline(agentPipeline: WebviewAgentPipelineState | undefine
 }
 
 function renderPendingApproval(approval: PendingApproval): string {
+  const approveLabel = approval.tool === "agent_retry" ? "Continue" : "Approve Once";
+  const denyLabel = approval.tool === "agent_retry" ? "Stop" : "Deny";
+  const target = approval.tool === "agent_retry" ? "" : `<p>Target: ${escapeHtml(approval.target ?? "n/a")}</p>`;
   return `<section aria-label="Pending approval">
     <h2>Pending Approval</h2>
     <p><strong>${escapeHtml(approval.title)}</strong></p>
     <p>Tool: ${escapeHtml(approval.tool)}</p>
-    <p>Target: ${escapeHtml(approval.target ?? "n/a")}</p>
+    ${target}
     ${renderDetails(approval.details)}
-    <button type="button" data-approval="approve" data-approval-id="${escapeHtml(approval.id)}">Approve Once</button>
-    <button type="button" class="secondary" data-approval="deny" data-approval-id="${escapeHtml(approval.id)}">Deny</button>
+    <button type="button" data-approval="approve" data-approval-id="${escapeHtml(approval.id)}">${approveLabel}</button>
+    <button type="button" class="secondary" data-approval="deny" data-approval-id="${escapeHtml(approval.id)}">${denyLabel}</button>
   </section>`;
 }
 

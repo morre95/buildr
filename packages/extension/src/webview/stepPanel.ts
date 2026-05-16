@@ -59,8 +59,16 @@ export interface StepPanelState {
   stream?: PlanStreamState;
   tokenBudget?: TokenBudgetState;
   agentPipeline?: WebviewAgentPipelineState;
+  model?: WebviewModelState;
   activeSessionId?: string;
   sessions?: SavedAgentSessionSummary[];
+}
+
+export interface WebviewModelState {
+  provider: string;
+  modelId: string;
+  baseUrl: string;
+  local: boolean;
 }
 
 export interface WebviewAgentPipelineState {
@@ -281,6 +289,7 @@ function renderState(state: StepPanelState): string {
   const canRunPlan = state.plan !== undefined && !state.running && state.pendingApproval === undefined;
   const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
   const sessions = renderSessionControls(state.sessions ?? [], state.activeSessionId);
+  const model = renderModelState(state.model);
 
   return `<!doctype html>
 <html lang="en">
@@ -319,6 +328,20 @@ function renderState(state: StepPanelState): string {
         align-items: center;
         justify-content: space-between;
         gap: 12px;
+      }
+
+      .header-left {
+        min-width: 0;
+      }
+
+      .model-state {
+        margin-top: 4px;
+        color: var(--vscode-descriptionForeground);
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: min(560px, 52vw);
       }
 
       h1, h2 {
@@ -563,7 +586,10 @@ function renderState(state: StepPanelState): string {
   <body>
     <main>
       <header>
-        <h1>Buildr</h1>
+        <div class="header-left">
+          <h1>Buildr</h1>
+          ${model}
+        </div>
         ${sessions}
       </header>
       <div class="content">
@@ -797,6 +823,16 @@ function renderSessionControls(sessions: SavedAgentSessionSummary[], activeSessi
     </select>
     <button type="button" class="secondary" id="new-session">New</button>
     <button type="button" class="secondary" id="delete-session" ${sessions.length === 0 ? "disabled" : ""}>Delete</button>
+  </div>`;
+}
+
+function renderModelState(model: WebviewModelState | undefined): string {
+  if (model === undefined) {
+    return "";
+  }
+  const budget = model.local ? "local, unlimited tokens" : "cloud, token budget active";
+  return `<div class="model-state" title="${escapeHtml(`${model.provider} · ${model.modelId} · ${model.baseUrl}`)}">
+    ${escapeHtml(model.provider)} · ${escapeHtml(model.modelId)} · ${escapeHtml(budget)}
   </div>`;
 }
 

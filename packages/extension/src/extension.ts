@@ -2625,6 +2625,7 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string, options
     ...(currentPlan === undefined ? {} : { plan: currentPlan }),
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
     ...(agentPipelineState === undefined ? {} : { agentPipeline: agentPipelineState }),
+    model: getConfiguredModelState(),
     ...(finalSummaryState === undefined ? {} : { finalSummary: finalSummaryState }),
     activeSessionId,
     sessions: getSessionSummaries()
@@ -2634,6 +2635,16 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string, options
 
 function getMaxParallelSubAgents(): number {
   return vscode.workspace.getConfiguration("buildr.agents").get<number>("maxParallelSubAgents", 3);
+}
+
+function getConfiguredModelState(): { provider: string; modelId: string; baseUrl: string; local: boolean } {
+  const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
+  return {
+    provider,
+    modelId: getConfiguredModelId(),
+    baseUrl,
+    local: isLocalProvider(provider, baseUrl)
+  };
 }
 
 function getTokenBudgetConfig(): TokenBudgetConfig {

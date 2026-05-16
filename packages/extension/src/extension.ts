@@ -1838,6 +1838,7 @@ function createAgentRepairMessages(options: {
         "Return only JSON. Do not wrap the JSON in Markdown.",
         `The corrected envelope must keep role "${options.role}", version 1, requestId "${options.requestId}", status "ok" or "blocked", data, and warnings array.`,
         "Do not add prose. Do not change the requestId. Do not decide routing.",
+        "Every value must be valid JSON. Do not use JavaScript expressions or string concatenation inside JSON.",
         "",
         "Required data schema:",
         options.schema

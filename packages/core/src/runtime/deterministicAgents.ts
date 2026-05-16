@@ -210,6 +210,7 @@ export function createCoderMessages(options: {
     "Return structured diffs only, never full files.",
     "Use workspace-relative paths and the provided beforeHash for every file diff.",
     "Coder data must be an object with shape: { summary: string, diffs: [{ path: string, beforeHash: string, hunks: [{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }] }] }.",
+    "Every value must be valid JSON. Do not use JavaScript expressions or string concatenation inside JSON.",
     "For new files, use oldStart 0, oldLines 0, newStart 1, newLines equal to the number of added lines, and hunk lines that all start with '+'.",
     "Every hunk line must start with exactly one of: space for context, + for additions, - for removals.",
     "Do not decide routing, retries, testing, approval, or completion."
@@ -330,6 +331,7 @@ function createAgentMessages(role: AgentRole, requestId: string, instructions: s
   const envelope = [
     "Return only JSON. Do not wrap the JSON in Markdown.",
     `The JSON envelope must be exactly: {"role":"${role}","version":1,"requestId":"${requestId}","status":"ok","data":...,"warnings":[]}.`,
+    "Every value must be valid JSON. Do not use JavaScript expressions or string concatenation inside JSON.",
     "Use status blocked only when the requested role cannot produce valid data."
   ].join("\n");
   return [
@@ -437,13 +439,100 @@ function parseJsonObject(rawResponse: string): unknown {
   }
   try {
     return JSON.parse(trimmed);
-  } catch {
+  } catch (error) {
     const extracted = extractFirstJsonObject(trimmed);
     if (extracted === undefined) {
       throw new Error("Agent response did not contain a JSON object.");
     }
-    return JSON.parse(extracted);
+    try {
+      return JSON.parse(extracted);
+    } catch {
+      const repaired = repairConcatenatedJsonStrings(extracted);
+      if (repaired === undefined) {
+        throw error;
+      }
+      return JSON.parse(repaired);
+    }
   }
+}
+
+function repairConcatenatedJsonStrings(value: string): string | undefined {
+  let repaired = "";
+  let changed = false;
+  let index = 0;
+
+  while (index < value.length) {
+    if (value[index] !== "\"") {
+      repaired += value[index];
+      index += 1;
+      continue;
+    }
+
+    const first = readJsonStringToken(value, index);
+    if (first === undefined) {
+      repaired += value[index];
+      index += 1;
+      continue;
+    }
+
+    let combined = first.decoded;
+    let end = first.end;
+    let cursor = skipWhitespace(value, end);
+    let didConcat = false;
+
+    while (value[cursor] === "+") {
+      const nextStart = skipWhitespace(value, cursor + 1);
+      if (value[nextStart] !== "\"") {
+        break;
+      }
+      const next = readJsonStringToken(value, nextStart);
+      if (next === undefined) {
+        break;
+      }
+      combined += next.decoded;
+      end = next.end;
+      cursor = skipWhitespace(value, end);
+      didConcat = true;
+    }
+
+    repaired += didConcat ? JSON.stringify(combined) : value.slice(index, first.end);
+    changed = changed || didConcat;
+    index = end;
+  }
+
+  return changed ? repaired : undefined;
+}
+
+function readJsonStringToken(value: string, start: number): { decoded: string; end: number } | undefined {
+  let escaped = false;
+  for (let index = start + 1; index < value.length; index += 1) {
+    const char = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      const raw = value.slice(start, index + 1);
+      try {
+        return { decoded: JSON.parse(raw) as string, end: index + 1 };
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function skipWhitespace(value: string, start: number): number {
+  let index = start;
+  while (/\s/u.test(value[index] ?? "")) {
+    index += 1;
+  }
+  return index;
 }
 
 function extractFirstJsonObject(value: string): string | undefined {

@@ -65,6 +65,23 @@ describe("deterministic agent contracts", () => {
     expect(applyAgentFileDiff(current, diff)).toBe("one\ndeux\nthree\n");
   });
 
+  it("repairs model JSON that uses string concatenation for a hunk line", () => {
+    const parsed = parseAgentEnvelope(
+      [
+        "{\"role\":\"coder\",\"version\":1,\"requestId\":\"coder:1\",\"status\":\"ok\",",
+        "\"data\":{\"summary\":\"Added file.\",\"diffs\":[{\"path\":\"script.js\",",
+        "\"beforeHash\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",",
+        "\"hunks\":[{\"oldStart\":0,\"oldLines\":0,\"newStart\":1,\"newLines\":2,",
+        "\"lines\":[\"+(() => {\",\"+\" + \"})();\"]}]}]},\"warnings\":[]}"
+      ].join(""),
+      "coder",
+      "coder:1",
+      validateCoderOutput
+    );
+
+    expect(parsed.data.diffs[0]?.hunks[0]?.lines).toEqual(["+(() => {", "+})();"]);
+  });
+
   it("detects hunk conflicts", () => {
     const current = "one\ntwo\n";
     const diff: AgentFileDiff = {

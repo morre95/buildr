@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { BuildrPlan, ExecutionEvent, PendingApproval, TokenBudgetState } from "@buildr/core";
 
 export type ApprovalDecision = "approve" | "deny";
-export type BuildrChatMode = "ask" | "plan" | "agent" | "debug";
+export type BuildrChatMode = "ask" | "plan" | "fast-agent" | "agent" | "debug";
 
 export interface ApprovalMessage {
   id: string;
@@ -655,6 +655,7 @@ function renderState(state: StepPanelState): string {
           <select id="mode" aria-label="Buildr mode">
             ${renderModeOption("ask", "Ask", state.mode)}
             ${renderModeOption("plan", "Plan", state.mode)}
+            ${renderModeOption("fast-agent", "Fast Agent", state.mode)}
             ${renderModeOption("agent", "Agent", state.mode)}
             ${renderModeOption("debug", "Debug", state.mode)}
           </select>
@@ -936,6 +937,8 @@ function activityLabel(state: StepPanelState, phase: string | undefined): string
         return "LLM is answering...";
       case "plan":
         return "LLM is planning...";
+      case "fast-agent":
+        return "LLM is making a fast patch...";
       case "debug":
         return "Debug mode is running...";
       case "agent":
@@ -968,6 +971,9 @@ function activityDetail(state: StepPanelState, phase: string | undefined): strin
   }
   if (state.running && state.mode === "plan") {
     return "Preparing a validated plan.";
+  }
+  if (state.running && state.mode === "fast-agent") {
+    return "Skipping planner, reviewer, and tester for a small change.";
   }
   if (state.agentPipeline?.plan !== undefined && phase !== undefined) {
     const task = state.agentPipeline.plan.tasks[state.agentPipeline.currentTaskIndex];
@@ -1192,7 +1198,7 @@ function parsePromptMessage(message: unknown): PromptMessage | undefined {
   if (!isRecord(message) || message.type !== "submitPrompt" || typeof message.prompt !== "string") {
     return undefined;
   }
-  if (message.mode !== "ask" && message.mode !== "plan" && message.mode !== "agent" && message.mode !== "debug") {
+  if (message.mode !== "ask" && message.mode !== "plan" && message.mode !== "fast-agent" && message.mode !== "agent" && message.mode !== "debug") {
     return undefined;
   }
   return {

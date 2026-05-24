@@ -137,6 +137,7 @@ interface AgentPipelineState {
   phase: AgentPipelinePhase;
   rawTask: string;
   workspaceTree: string[];
+  verificationMode?: "llm" | "skip";
   plan?: AgentPlan;
   currentTaskIndex: number;
   coderResults: AgentCoderPipelineResult[];
@@ -817,6 +818,32 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
     return;
   }
 
+  if (message.mode === "fast-agent") {
+    try {
+      requireTrustedWorkspace(vscode.workspace.isTrusted);
+    } catch (error) {
+      vscode.window.showWarningMessage(error instanceof Error ? error.message : "Buildr execution is blocked.");
+      messages.push({
+        role: "assistant",
+        text: error instanceof Error ? error.message : "Buildr execution is blocked."
+      });
+      renderCurrentState(stepPanel);
+      return;
+    }
+
+    isRunning = true;
+    activeAbortController = new AbortController();
+    renderCurrentState(stepPanel);
+    try {
+      await runFastAgentWorkflow(prompt, message.fileMentions, stepPanel);
+    } finally {
+      isRunning = false;
+      activeAbortController = undefined;
+      renderCurrentState(stepPanel);
+    }
+    return;
+  }
+
   await createPlanFromGoal(prompt, message.fileMentions, stepPanel);
 }
 
@@ -1311,6 +1338,17 @@ function createContextInspectionEvent(context: WorkspaceContextSummary, title: s
   };
 }
 
+function selectFastAgentTargetFiles(mentionedFiles: string[], context: WorkspaceContextSummary): string[] {
+  const candidates = mentionedFiles.length > 0 ? mentionedFiles : context.includedFiles;
+  return [...new Set(candidates)]
+    .filter((path) => isFastAgentEditablePath(path))
+    .slice(0, 2);
+}
+
+function isFastAgentEditablePath(path: string): boolean {
+  return /\.(cjs|css|html|js|json|jsx|md|mjs|ts|tsx|txt|yaml|yml)$/u.test(path);
+}
+
 function createSubAgentSourceContext(context: WorkspaceContextSummary, target: PlanWriteTarget): string {
   return [
     `Target assignment: ${target.title}`,
@@ -1397,6 +1435,8 @@ function modeLabel(mode: BuildrChatMode): string {
   switch (mode) {
     case "ask":
       return "Ask";
+    case "fast-agent":
+      return "Fast Agent";
     case "agent":
       return "Agent";
     case "debug":
@@ -1453,6 +1493,103 @@ export function deactivate(): void {
   activeAbortController?.abort();
 }
 
+async function runFastAgentWorkflow(rawTask: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
+  if (!await ensureCloudProviderReady("run Fast Agent mode with workspace context")) {
+    messages.push({ role: "assistant", text: "Buildr did not send workspace context to the configured cloud provider." });
+    renderCurrentState(stepPanel);
+    return;
+  }
+  events = [];
+  pendingApproval = undefined;
+  queuedVerificationCommand = undefined;
+  queuedWriteTargets = [];
+  queuedPatchApprovals = [];
+  finalSummaryState = undefined;
+  tokenBudgetState = undefined;
+
+  const resolvedMentions = resolveFileMentions(fileMentions);
+  currentPlanMentionedFiles = resolvedMentions;
+  const context = await createWorkspaceContextSummary(rawTask, resolvedMentions);
+  const targetFiles = selectFastAgentTargetFiles(resolvedMentions, context);
+  if (targetFiles.length === 0) {
+    const summary = "Fast Agent needs at least one concrete target file. Mention a file with @path or use Agent mode for automatic planning.";
+    events.push({
+      id: `agent:fast:no-target:${Date.now()}`,
+      title: "Fast Agent target selection",
+      status: "blocked",
+      tool: "agent_orchestrator",
+      summary,
+      warnings: context.warnings
+    });
+    messages.push({ role: "assistant", text: summary });
+    renderCurrentState(stepPanel, createFinalReportSummary());
+    return;
+  }
+
+  const task: AgentPlanTask = {
+    id: "fast_patch",
+    title: "Fast patch",
+    instructions: [
+      rawTask,
+      "",
+      "Implement the smallest safe change that satisfies the request.",
+      "Do not refactor unrelated code."
+    ].join("\n"),
+    targetFiles,
+    dependsOn: [],
+    acceptanceCriteria: ["The requested small change is implemented in the selected target file(s)."]
+  };
+  const plan: AgentPlan = {
+    summary: `Fast Agent patch for ${rawTask}`,
+    tasks: [task]
+  };
+  agentPipelineState = {
+    phase: "coding",
+    rawTask,
+    workspaceTree: targetFiles,
+    verificationMode: "skip",
+    plan,
+    currentTaskIndex: 0,
+    coderResults: [],
+    reviewResults: [],
+    testCases: [],
+    testObservations: [],
+    retryCount: {},
+    warnings: [...context.warnings, "Fast Agent skipped architect, reviewer, and tester LLM passes."]
+  };
+  currentPlan = convertAgentPlanToBuildrPlan(rawTask, plan);
+  events.push(createContextInspectionEvent(context, "Fast Agent repo context"));
+  events.push({
+    id: `agent:fast:${Date.now()}`,
+    title: "Create fast agent task",
+    status: "completed",
+    tool: "agent_orchestrator",
+    summary: `Selected ${targetFiles.length} target file(s): ${targetFiles.join(", ")}.`,
+    warnings: []
+  });
+  renderCurrentState(stepPanel);
+
+  try {
+    const result = await runCoderReviewLoop(task, context, stepPanel, { review: false });
+    if (result === undefined) {
+      return;
+    }
+    agentPipelineState.coderResults.push(result);
+    queuedPatchApprovals.push(...result.patches.map((patch) => createAgentPatchApproval(task, result, patch)));
+    pendingApproval = queuedPatchApprovals.shift();
+    if (pendingApproval !== undefined) {
+      events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+    } else {
+      completeAgentPipeline("Fast Agent completed without patch proposals.");
+      renderCurrentState(stepPanel, createFinalReportSummary());
+      return;
+    }
+    renderCurrentState(stepPanel);
+  } catch (error) {
+    failAgentPipeline(error);
+  }
+}
+
 async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: string[], stepPanel: StepPanel): Promise<void> {
   if (!await ensureCloudProviderReady("run Agent mode with workspace context")) {
     messages.push({ role: "assistant", text: "Buildr did not send workspace context to the configured cloud provider." });
@@ -1475,6 +1612,7 @@ async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: stri
     phase: "planning",
     rawTask,
     workspaceTree,
+    verificationMode: "llm",
     currentTaskIndex: 0,
     coderResults: [],
     reviewResults: [],
@@ -1538,6 +1676,7 @@ async function runDeterministicAgentWorkflowFromCurrentPlan(stepPanel: StepPanel
     phase: "coding",
     rawTask: currentPlan.goal,
     workspaceTree: await createWorkspaceTree(),
+    verificationMode: "llm",
     plan,
     currentTaskIndex: 0,
     coderResults: [],
@@ -1582,7 +1721,12 @@ async function createReviewedPatchApprovals(plan: AgentPlan, context: WorkspaceC
   return true;
 }
 
-async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContextSummary, stepPanel: StepPanel): Promise<AgentCoderPipelineResult | undefined> {
+async function runCoderReviewLoop(
+  task: AgentPlanTask,
+  context: WorkspaceContextSummary,
+  stepPanel: StepPanel,
+  options: { review?: boolean } = {}
+): Promise<AgentCoderPipelineResult | undefined> {
   if (agentPipelineState === undefined) {
     throw new Error("Agent pipeline state is not initialized.");
   }
@@ -1681,6 +1825,18 @@ async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContext
       evidence: { outputExcerpt: formattedDiff.slice(0, 4000) },
       warnings: coder.warnings
     });
+
+    if (options.review === false) {
+      events.push({
+        id: `agent:reviewer:${task.id}:${attempt}:skipped`,
+        title: `Reviewer: ${task.title}`,
+        status: "completed",
+        tool: "agent_reviewer",
+        summary: "Skipped reviewer in Fast Agent mode.",
+        warnings: ["Fast Agent skips reviewer to reduce latency."]
+      });
+      return coderResult;
+    }
 
     agentPipelineState.phase = "reviewing";
     const reviewer = await invokeJsonAgent("reviewer", createReviewerMessages({
@@ -2225,6 +2381,12 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
           events.push(eventFromPermissionDecision(pendingApproval, "ask"));
         }
         renderCurrentState(stepPanel);
+        return;
+      }
+
+      if (agentPipelineState?.verificationMode === "skip") {
+        completeAgentPipeline("Fast Agent patch applied. Verification was skipped for speed.");
+        renderCurrentState(stepPanel, createFinalReportSummary());
         return;
       }
 

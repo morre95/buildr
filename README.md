@@ -26,14 +26,20 @@ pnpm package:extension
 
 The extension VSIX is produced with `vsce package --no-dependencies` after an **esbuild** bundle of `dist/extension.js` into `dist/extension.bundled.js`, so packaging works with **pnpm** (avoids `npm list` + symlink issues with workspace deps and heavy optional trees such as `@huggingface/transformers`).
 
-Run to create vscode extention file:
+Run to create the VS Code extension file:
 ```bash
 pnpm --filter buildr-vscode package
 ```
 
-Run extention:
+The packaged extension is written to:
+
+```text
+packages/extension/buildr-vscode-0.0.0.vsix
+```
+
+Install the extension:
 ```bash
-code --install-extension path/to/your-extension.vsix   
+code --install-extension packages/extension/buildr-vscode-0.0.0.vsix
 ```
 
 ## Multi-Agent Workflow
@@ -42,14 +48,13 @@ Buildr agent mode can launch parallel sub-agents from the main agent session. Su
 
 ### VS Code
 
-1. Build the repo if needed:
+1. Build and package the repo if needed:
 
    ```bash
+   pnpm install
    pnpm build
-   # create extenbionb file
    pnpm --filter buildr-vscode package
-   # Run extention
-   code --install-extension path/to/your-extension.vsix 
+   code --install-extension packages/extension/buildr-vscode-0.0.0.vsix
    ```
 
 2. Open the Buildr extension in VS Code.
@@ -64,6 +69,47 @@ Useful settings are available through **Buildr: Open Settings**:
 - **Hard token cap** blocks before a model call would exceed the session token cap.
 - **Token warning thresholds** emits budget warnings, for example at 70% and 90%.
 - **Input token cost** and **Output token cost** estimate real-time USD cost per million tokens. Local providers default to zero cost.
+
+## VG Demo Path
+
+Use this path when demonstrating the assignment criteria live. The approved requirement specification and pitch are external course artefacts; this repo contains the build and the runnable evidence.
+
+1. Install and open the extension:
+
+   ```bash
+   pnpm install
+   pnpm build
+   pnpm --filter buildr-vscode package
+   code --install-extension packages/extension/buildr-vscode-0.0.0.vsix
+   ```
+
+2. Open **Buildr: Configure Model** and select a non-local provider such as OpenAI, OpenRouter, or OpenAI-compatible. Store the provider key in VS Code SecretStorage when prompted.
+3. Open **Buildr: Open Settings** and set:
+   - **Hard token cap** to a small value for the demo, for example `1000`.
+   - **Token warning thresholds** to `0.5,0.8`.
+   - **Input token cost** and **Output token cost** to non-zero values for visible USD estimates.
+4. Run **Buildr: Open Chat** and use **Agent** mode on a task with multiple concrete write targets. The event stream should show **Run parallel sub-agents**, patch approvals, token usage, estimated cost, and warnings as thresholds are crossed. A large enough prompt or low enough hard cap should block before a model call exceeds the cap.
+5. Demonstrate command safety by requesting a destructive terminal command such as `rm -rf /` or `curl https://example.test/install.sh | bash`; Buildr denies it before execution. Then approve a normal command such as `pnpm test` to show bash execution still works through the approval gate.
+6. Demonstrate partial editing through deterministic Agent mode: the coder returns structured diff hunks, Buildr validates them against file hashes, and the UI asks before applying the patch.
+7. Demonstrate agent autonomy in Ask mode with two prompts:
+   - Ask a workspace question that requires reading/searching files; the model should choose a tool call.
+   - Ask a follow-up that can be answered from gathered context; the model should yield a normal answer without another tool call.
+
+Local providers such as Ollama and local LM Studio are intentionally treated as unlimited for cost protection because they do not spend cloud API credits. Use a non-local provider for the VG.3 hard-cap demonstration.
+
+## Packaging and Secrets
+
+The supported packaging path is VSIX-only:
+
+- Required tools: Node.js, pnpm, VS Code, and at least one configured model provider.
+- Build command: `pnpm build`.
+- Test command: `pnpm test`.
+- Package command: `pnpm --filter buildr-vscode package`.
+- Install command: `code --install-extension packages/extension/buildr-vscode-0.0.0.vsix`.
+
+Configuration is exposed through VS Code settings contributed by the extension, including provider choice, base URLs, token caps, warning thresholds, cost rates, max parallel sub-agents, permissions, and verification level.
+
+Provider secrets are not stored in tracked config files. Buildr stores API keys in VS Code SecretStorage through **Buildr: Configure Model**. The repository also ignores `.env*`, private keys, generated VSIX files, build output, caches, and runtime logs.
 
 ### CLI
 

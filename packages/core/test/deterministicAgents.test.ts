@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyAgentFileDiff,
   createTextPatchFromAgentDiff,
+  createTesterMessages,
   formatTextPatchAsGitDiff,
   hashText,
   parseAgentEnvelope,
@@ -90,6 +91,27 @@ describe("deterministic agent contracts", () => {
     expect(resolveCoderRetryLimit(0, false)).toBe(3);
     expect(resolveCoderRetryLimit(2.5, true)).toBe(5);
     expect(resolveCoderRetryLimit("4", false)).toBe(3);
+  });
+
+  it("instructs tester agents to generate one-shot commands", () => {
+    const messages = createTesterMessages({
+      requestId: "tester:1",
+      plan: {
+        summary: "Verify the workspace.",
+        tasks: [{
+          id: "test",
+          title: "Run tests",
+          instructions: "Run the test suite.",
+          targetFiles: [],
+          dependsOn: [],
+          acceptanceCriteria: ["Tests pass."]
+        }]
+      }
+    });
+    const prompt = messages.map((message) => message.content).join("\n");
+
+    expect(prompt).toContain("non-interactive and exit on its own");
+    expect(prompt).toContain("Do not use watch mode");
   });
 
   it("detects hunk conflicts", () => {

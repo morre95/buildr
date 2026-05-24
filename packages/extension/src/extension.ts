@@ -2210,7 +2210,11 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
     } else if (approval.tool === "run_terminal") {
       const payload = approval.payload as TerminalApprovalPayload;
       if (payload.agentTestCaseId !== undefined) {
-        const result = await runCommandAsVscodeTask(payload.command, payload.cwd);
+        const result = await runCommandAsVscodeTask(
+          payload.command,
+          payload.cwd,
+          activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal }
+        );
         agentPipelineState?.testObservations.push({
           id: payload.agentTestCaseId,
           command: result.command,
@@ -2224,7 +2228,9 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
           status: result.exitCode === 0 ? "completed" : "failed",
           tool: "vscode_task",
           target: payload.cwd,
-          summary: `Task exited with ${result.exitCode ?? "unknown"}.`,
+          summary: result.timedOut === true
+            ? "Task timed out before completing."
+            : `Task exited with ${result.exitCode ?? "unknown"}.`,
           evidence: result.exitCode === undefined
             ? {
               command: result.command,
@@ -2235,7 +2241,7 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
               exitCode: result.exitCode,
               outputExcerpt: [result.stdout, result.stderr].filter((part) => part.length > 0).join("\n").slice(-4000)
             },
-          warnings: []
+          warnings: result.timedOut === true ? ["Approved agent test command timed out. Avoid watch/dev-server commands for verification."] : []
         });
         const nextTestCase = agentPipelineState?.testCases.find((testCase) => !agentPipelineState?.testObservations.some((observation) => observation.id === testCase.id));
         if (nextTestCase !== undefined) {

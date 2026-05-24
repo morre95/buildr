@@ -1,11 +1,19 @@
 import * as vscode from "vscode";
 import { spawn } from "node:child_process";
 
+const DEFAULT_TASK_TIMEOUT_MS = 120000;
+
 export interface CapturedTaskResult {
   command: string;
   exitCode: number | undefined;
   stdout: string;
   stderr: string;
+  timedOut?: boolean;
+}
+
+export interface RunCommandAsVscodeTaskOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export async function findTaskCommand(kind: "build" | "test" | "lint"): Promise<string | undefined> {
@@ -23,12 +31,41 @@ export async function findTaskCommand(kind: "build" | "test" | "lint"): Promise<
   return undefined;
 }
 
-export async function runCommandAsVscodeTask(command: string, cwd: string): Promise<CapturedTaskResult> {
+export async function runCommandAsVscodeTask(
+  command: string,
+  cwd: string,
+  options: RunCommandAsVscodeTaskOptions = {}
+): Promise<CapturedTaskResult> {
   let closeEmitter: vscode.EventEmitter<number | void> | undefined;
+  const timeoutMs = Math.max(1000, Math.floor(options.timeoutMs ?? DEFAULT_TASK_TIMEOUT_MS));
   const resultPromise = new Promise<CapturedTaskResult>((resolve) => {
     let stdout = "";
     let stderr = "";
     let exitCode: number | undefined;
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let child: ReturnType<typeof spawn> | undefined;
+    let timedOut = false;
+
+    const finish = (result: CapturedTaskResult): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+      options.signal?.removeEventListener("abort", abort);
+      closeEmitter?.fire(result.exitCode ?? 1);
+      closeEmitter?.dispose();
+      resolve(result);
+    };
+    const abort = (): void => {
+      stderr += "\nBuildr stopped the approved command before it completed.\n";
+      child?.kill("SIGTERM");
+      finish({ command, exitCode: 1, stdout, stderr, timedOut });
+    };
+
     const execution = new vscode.CustomExecution(async () => {
       const writeEmitter = new vscode.EventEmitter<string>();
       closeEmitter = new vscode.EventEmitter<number | void>();
@@ -36,33 +73,46 @@ export async function runCommandAsVscodeTask(command: string, cwd: string): Prom
         onDidWrite: writeEmitter.event,
         onDidClose: closeEmitter.event,
         open: () => {
-          const child = spawn(command, {
+          child = spawn(command, {
             cwd,
             shell: true,
             stdio: ["ignore", "pipe", "pipe"]
           });
-          child.stdout.on("data", (chunk: Buffer) => {
+          timeout = setTimeout(() => {
+            timedOut = true;
+            exitCode = 1;
+            const message = `\nBuildr timed out the approved command after ${timeoutMs}ms.\n`;
+            stderr += message;
+            writeEmitter.fire(message.replace(/\n/gu, "\r\n"));
+            child?.kill("SIGTERM");
+            finish({ command, exitCode, stdout, stderr, timedOut });
+            writeEmitter.dispose();
+          }, timeoutMs);
+          options.signal?.addEventListener("abort", abort, { once: true });
+          child.stdout?.on("data", (chunk: Buffer) => {
             const text = chunk.toString("utf8");
             stdout += text;
             writeEmitter.fire(text.replace(/\n/gu, "\r\n"));
           });
-          child.stderr.on("data", (chunk: Buffer) => {
+          child.stderr?.on("data", (chunk: Buffer) => {
             const text = chunk.toString("utf8");
             stderr += text;
             writeEmitter.fire(text.replace(/\n/gu, "\r\n"));
           });
           child.on("close", (code) => {
+            if (settled) {
+              return;
+            }
             exitCode = code ?? 1;
-            closeEmitter?.fire(exitCode);
             writeEmitter.dispose();
-            closeEmitter?.dispose();
-            resolve({ command, exitCode, stdout, stderr });
+            finish({ command, exitCode, stdout, stderr, timedOut });
           });
         },
         close: () => {
           if (exitCode === undefined) {
             exitCode = 1;
-            resolve({ command, exitCode, stdout, stderr });
+            child?.kill("SIGTERM");
+            finish({ command, exitCode, stdout, stderr, timedOut });
           }
         }
       };

@@ -250,6 +250,9 @@ export function createTesterMessages(options: {
     options.observations === undefined
       ? "Generate test cases for the completed plan. Return commands for the extension to execute."
       : "Inspect the supplied stdout/stderr observations and return a structured pass/fail result.",
+    "Every generated command must be non-interactive and exit on its own.",
+    "Do not use watch mode, development servers, REPLs, prompts, or commands that wait for user input.",
+    "Prefer one-shot checks such as pnpm test, npm test -- --run, pnpm vitest run, pnpm build, or pnpm lint when they fit the workspace.",
     "Do not claim you ran tests yourself.",
     "Do not decide routing, retries, approval, or completion."
   ], {

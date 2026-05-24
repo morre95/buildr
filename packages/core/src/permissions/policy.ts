@@ -39,13 +39,19 @@ export function isDangerousCommand(command: string | undefined): boolean {
   }
 
   const normalized = command.toLowerCase();
-  return [
-    "rm -rf /",
-    "chmod -r 777",
-    "curl ",
-    "wget ",
-    ":(){",
-    "mkfs",
-    "dd if="
-  ].some((pattern) => normalized.includes(pattern));
+  return DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
 }
+
+const DANGEROUS_COMMAND_PATTERNS = [
+  /\brm\s+-[^\n;|&]*r[^\n;|&]*f[^\n;|&]*(?:\s+\/|\s+\*|\s+~|\s+\$home|\s+\.)/u,
+  /\bsudo\s+rm\s+-[^\n;|&]*r[^\n;|&]*f/u,
+  /\bgit\s+clean\s+-[^\n;|&]*(?:x[^\n;|&]*f|f[^\n;|&]*x)/u,
+  /\bchmod\s+-r\s+777\b/u,
+  /\bchown\s+-r\b/u,
+  /\bmkfs(?:\.|\s)/u,
+  /\bdd\s+if=/u,
+  /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:/u,
+  /\b(?:curl|wget)\b[^\n]*(?:\|\s*(?:sh|bash|zsh|fish)|>\s*(?:\/etc\/|~\/\.(?:ssh|config)|.*(?:\.pem|\.key)))/u,
+  />\s*\/etc\//u,
+  /\b(?:cat|cp|scp|rsync|curl|wget)\b[^\n]*(?:\.env|id_rsa|id_ed25519|\.pem|\.key)/u
+];

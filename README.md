@@ -24,7 +24,7 @@ The system have different modes depending of what the user wants to do. The mode
 
 
 
-Because the Agent mode is verry slow. Normally it is minimum 5 LLM calls before the every thing is finished. This is the work-flow for the agent mode:
+Because the Agent mode is verry slow. Normally it is minimum 5 LLM calls before the every thing is finished. This is the workflow for the agent mode:
 
 1. 
   architect, creates a plan.

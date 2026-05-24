@@ -94,6 +94,7 @@ export class StepPanel {
   private deleteSessionHandler: ((id: string) => void) | undefined;
   private newSessionHandler: (() => void) | undefined;
   private runPlanHandler: (() => void) | undefined;
+  private runPlanFastHandler: (() => void) | undefined;
   private changePlanHandler: (() => void) | undefined;
   private stopHandler: (() => void) | undefined;
   private disposeHandler: (() => void) | undefined;
@@ -127,6 +128,10 @@ export class StepPanel {
 
   onRunPlan(handler: () => void): void {
     this.runPlanHandler = handler;
+  }
+
+  onRunPlanFast(handler: () => void): void {
+    this.runPlanFastHandler = handler;
   }
 
   onChangePlan(handler: () => void): void {
@@ -239,6 +244,11 @@ export class StepPanel {
 
       if (isMessageOfType(message, "runPlan")) {
         this.runPlanHandler?.();
+        return;
+      }
+
+      if (isMessageOfType(message, "runPlanFast")) {
+        this.runPlanFastHandler?.();
         return;
       }
 
@@ -732,6 +742,10 @@ function renderState(state: StepPanelState): string {
         vscode.postMessage({ type: "runPlan" });
       });
 
+      document.getElementById("run-plan-fast")?.addEventListener("click", () => {
+        vscode.postMessage({ type: "runPlanFast" });
+      });
+
       document.getElementById("change-plan")?.addEventListener("click", () => {
         vscode.postMessage({ type: "changePlan" });
       });
@@ -1012,6 +1026,7 @@ function renderActivePlan(plan: BuildrPlan, number: number, canRunPlan: boolean,
       <h2>Plan ${number}</h2>
       <div class="actions">
         <button type="button" id="run-plan" ${canRunPlan ? "" : "disabled"}>Run Plan</button>
+        <button type="button" class="secondary" id="run-plan-fast" ${canRunPlan ? "" : "disabled"}>Run Fast</button>
         <button type="button" class="secondary" id="change-plan" ${running ? "disabled" : ""}>Change Plan</button>
       </div>
     </div>

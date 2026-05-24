@@ -423,6 +423,9 @@ export function activate(context: vscode.ExtensionContext): void {
   stepPanel.onRunPlan(() => {
     void runCurrentPlanFromUi(stepPanel);
   });
+  stepPanel.onRunPlanFast(() => {
+    void runCurrentPlanFastFromUi(stepPanel);
+  });
   stepPanel.onChangePlan(() => {
     changeCurrentPlan(stepPanel);
   });
@@ -877,6 +880,41 @@ async function runCurrentPlanFromUi(stepPanel: StepPanel): Promise<void> {
     await runDeterministicAgentWorkflowFromCurrentPlan(stepPanel);
   } finally {
     isRunning = false;
+    renderCurrentState(stepPanel);
+  }
+}
+
+async function runCurrentPlanFastFromUi(stepPanel: StepPanel): Promise<void> {
+  if (isRunning || pendingApproval !== undefined) {
+    return;
+  }
+
+  try {
+    requireTrustedWorkspace(vscode.workspace.isTrusted);
+  } catch (error) {
+    vscode.window.showWarningMessage(error instanceof Error ? error.message : "Buildr execution is blocked.");
+    messages.push({
+      role: "assistant",
+      text: error instanceof Error ? error.message : "Buildr execution is blocked."
+    });
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  if (currentPlan === undefined) {
+    vscode.window.showWarningMessage("Create a Buildr plan before running approved steps.");
+    return;
+  }
+
+  activeMode = "fast-agent";
+  isRunning = true;
+  activeAbortController = new AbortController();
+  renderCurrentState(stepPanel);
+  try {
+    await runFastAgentWorkflow(currentPlan.goal, fastPlanFileMentions(currentPlan), stepPanel);
+  } finally {
+    isRunning = false;
+    activeAbortController = undefined;
     renderCurrentState(stepPanel);
   }
 }
@@ -1338,11 +1376,34 @@ function createContextInspectionEvent(context: WorkspaceContextSummary, title: s
   };
 }
 
-function selectFastAgentTargetFiles(mentionedFiles: string[], context: WorkspaceContextSummary): string[] {
-  const candidates = mentionedFiles.length > 0 ? mentionedFiles : context.includedFiles;
+function selectFastAgentTargetFiles(rawTask: string, mentionedFiles: string[], context: WorkspaceContextSummary): string[] {
+  const generatedTarget = mentionedFiles.length === 0 ? inferFastAgentNewFileTarget(rawTask) : undefined;
+  const candidates = mentionedFiles.length > 0
+    ? mentionedFiles
+    : generatedTarget === undefined ? context.includedFiles : [generatedTarget, ...context.includedFiles];
   return [...new Set(candidates)]
     .filter((path) => isFastAgentEditablePath(path))
     .slice(0, 2);
+}
+
+function inferFastAgentNewFileTarget(rawTask: string): string | undefined {
+  const normalized = rawTask.toLowerCase();
+  if (!/\b(create|build|make|generate|scaffold|new)\b/u.test(normalized)) {
+    return undefined;
+  }
+  if (/\breadme\b/u.test(normalized)) {
+    return "README.md";
+  }
+  if (/\b(json|config)\b/u.test(normalized)) {
+    return "config.json";
+  }
+  if (/\b(markdown|doc|documentation)\b/u.test(normalized)) {
+    return "notes.md";
+  }
+  if (/\b(game|snake|canvas|html|page|site|web|css|javascript|js)\b/u.test(normalized)) {
+    return "index.html";
+  }
+  return "index.html";
 }
 
 function isFastAgentEditablePath(path: string): boolean {
@@ -1446,6 +1507,27 @@ function modeLabel(mode: BuildrChatMode): string {
   }
 }
 
+function fastPlanFileMentions(plan: BuildrPlan): string[] {
+  return plan.steps
+    .filter((step) => step.kind === "write")
+    .flatMap((step) => step.targets)
+    .map(normalizeWorkspacePath)
+    .filter((target) => {
+      if (
+        target.length === 0 ||
+        target === "." ||
+        target.includes("${") ||
+        target.includes("*") ||
+        target.endsWith("/") ||
+        target.toLowerCase().includes("approved ")
+      ) {
+        return false;
+      }
+      return isFastAgentEditablePath(target);
+    })
+    .slice(0, 2);
+}
+
 function stopActiveOperation(stepPanel: StepPanel): void {
   activeAbortController?.abort();
   activeAbortController = undefined;
@@ -1510,9 +1592,9 @@ async function runFastAgentWorkflow(rawTask: string, fileMentions: string[], ste
   const resolvedMentions = resolveFileMentions(fileMentions);
   currentPlanMentionedFiles = resolvedMentions;
   const context = await createWorkspaceContextSummary(rawTask, resolvedMentions);
-  const targetFiles = selectFastAgentTargetFiles(resolvedMentions, context);
+  const targetFiles = selectFastAgentTargetFiles(rawTask, resolvedMentions, context);
   if (targetFiles.length === 0) {
-    const summary = "Fast Agent needs at least one concrete target file. Mention a file with @path or use Agent mode for automatic planning.";
+    const summary = "Fast Agent could not select a concrete target file. Mention a file with @path or use Agent mode for automatic planning.";
     events.push({
       id: `agent:fast:no-target:${Date.now()}`,
       title: "Fast Agent target selection",

@@ -930,6 +930,18 @@ function activityLabel(state: StepPanelState, phase: string | undefined): string
   if (state.stream?.active === true) {
     return "LLM is creating a plan...";
   }
+  if (state.running) {
+    switch (state.mode) {
+      case "ask":
+        return "LLM is answering...";
+      case "plan":
+        return "LLM is planning...";
+      case "debug":
+        return "Debug mode is running...";
+      case "agent":
+        break;
+    }
+  }
   switch (phase) {
     case "planning":
       return "LLM is planning the workflow...";
@@ -947,6 +959,15 @@ function activityLabel(state: StepPanelState, phase: string | undefined): string
 function activityDetail(state: StepPanelState, phase: string | undefined): string {
   if (state.stream?.status !== undefined && state.stream.status.trim().length > 0) {
     return state.stream.status;
+  }
+  if (state.running && state.mode === "ask") {
+    return "Waiting for the model response or tool results.";
+  }
+  if (state.running && state.mode === "debug") {
+    return "Waiting for debug input or analysis.";
+  }
+  if (state.running && state.mode === "plan") {
+    return "Preparing a validated plan.";
   }
   if (state.agentPipeline?.plan !== undefined && phase !== undefined) {
     const task = state.agentPipeline.plan.tasks[state.agentPipeline.currentTaskIndex];

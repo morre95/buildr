@@ -760,12 +760,20 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
   renderCurrentState(stepPanel);
 
   if (message.mode === "debug") {
+    isRunning = true;
+    activeAbortController = new AbortController();
     messages.push({
       role: "assistant",
       text: "Opening Debug Mode input."
     });
     renderCurrentState(stepPanel);
-    await runDebugFromInput();
+    try {
+      await runDebugFromInput();
+    } finally {
+      isRunning = false;
+      activeAbortController = undefined;
+      renderCurrentState(stepPanel);
+    }
     return;
   }
 

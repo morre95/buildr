@@ -380,6 +380,11 @@ function renderState(state: StepPanelState): string {
         color: var(--vscode-foreground);
       }
 
+      .composer .activity {
+        border-bottom: 0;
+        padding: 0 0 10px;
+      }
+
       .activity-spinner {
         width: 14px;
         height: 14px;
@@ -635,7 +640,6 @@ function renderState(state: StepPanelState): string {
         ${sessions}
       </header>
       <div class="content">
-        ${activity}
         ${messages}
         ${tokenBudget}
         ${agentPipeline}
@@ -646,6 +650,7 @@ function renderState(state: StepPanelState): string {
         ${finalSummary}
       </div>
       <form class="composer" id="composer">
+        ${activity}
         <div class="toolbar">
           <select id="mode" aria-label="Buildr mode">
             ${renderModeOption("ask", "Ask", state.mode)}
@@ -912,13 +917,13 @@ function renderActivity(state: StepPanelState): string {
     ? `<span class="activity-dot" aria-hidden="true"></span>`
     : `<span class="activity-spinner" aria-hidden="true"></span>`;
 
-  return `<section class="activity" role="status" aria-live="polite">
+  return `<div class="activity" role="status" aria-live="polite">
     ${indicator}
     <div>
       <strong>${escapeHtml(label)}</strong>
       <small>${escapeHtml(detail)}</small>
     </div>
-  </section>`;
+  </div>`;
 }
 
 function activityLabel(state: StepPanelState, phase: string | undefined): string {

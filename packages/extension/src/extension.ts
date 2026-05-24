@@ -1603,14 +1603,36 @@ async function runCoderReviewLoop(task: AgentPlanTask, context: WorkspaceContext
     }
     agentPipelineState.retryCount[task.id] = attempt - 1;
     const files = await createFileSnapshots(task.targetFiles);
-    const coder = await invokeJsonAgent("coder", createCoderMessages({
-      requestId: createAgentRequestId("coder"),
-      input: {
-        task,
-        files,
-        ...(feedback === undefined ? {} : { feedback })
-      }
-    }), validateCoderOutput);
+    let coder: AgentJsonEnvelope<CoderOutput>;
+    try {
+      coder = await invokeJsonAgent("coder", createCoderMessages({
+        requestId: createAgentRequestId("coder"),
+        input: {
+          task,
+          files,
+          ...(feedback === undefined ? {} : { feedback })
+        }
+      }), validateCoderOutput);
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
+      events.push({
+        id: `agent:coder:${task.id}:${attempt}:invalid-json`,
+        title: `Coder: ${task.title}`,
+        status: "failed",
+        tool: "agent_coder",
+        summary: `Coder returned invalid JSON: ${summary}`,
+        warnings: [summary]
+      });
+      lastFailure = summary;
+      feedback = [
+        "Your previous response was not valid JSON, so Buildr could not validate or apply it.",
+        summary,
+        "Regenerate the same task as one valid JSON envelope.",
+        "Return only JSON. Do not wrap it in Markdown.",
+        "Every hunk line must be one JSON string with quotes and backslashes escaped."
+      ].join("\n");
+      continue;
+    }
     let patches: TextPatch[];
     try {
       patches = await createValidatedPatches(coder.data, files);

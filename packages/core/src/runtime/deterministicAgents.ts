@@ -217,6 +217,7 @@ export function createCoderMessages(options: {
     "Use workspace-relative paths and the provided beforeHash for every file diff.",
     "Coder data must be an object with shape: { summary: string, diffs: [{ path: string, beforeHash: string, hunks: [{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }] }] }.",
     "Every value must be valid JSON. Do not use JavaScript expressions or string concatenation inside JSON.",
+    "Every hunk line must be a single valid JSON string. Escape quotes and backslashes inside code lines.",
     "For new files, use oldStart 0, oldLines 0, newStart 1, newLines equal to the number of added lines, and hunk lines that all start with '+'.",
     "Every hunk line must start with exactly one of: space for context, + for additions, - for removals.",
     "Do not decide routing, retries, testing, approval, or completion."

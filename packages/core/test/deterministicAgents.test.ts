@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyAgentFileDiff,
   createTextPatchFromAgentDiff,
+  createCoderMessages,
   createTesterMessages,
   formatTextPatchAsGitDiff,
   hashText,
@@ -91,6 +92,31 @@ describe("deterministic agent contracts", () => {
     expect(resolveCoderRetryLimit(0, false)).toBe(3);
     expect(resolveCoderRetryLimit(2.5, true)).toBe(5);
     expect(resolveCoderRetryLimit("4", false)).toBe(3);
+  });
+
+  it("instructs coder agents to JSON-escape hunk lines", () => {
+    const messages = createCoderMessages({
+      requestId: "coder:1",
+      input: {
+        task: {
+          id: "bug",
+          title: "Fix bug",
+          instructions: "Fix the bug.",
+          targetFiles: ["script.js"],
+          dependsOn: [],
+          acceptanceCriteria: ["Bug is fixed."]
+        },
+        files: [{
+          path: "script.js",
+          content: "console.log(\"snake\");\n",
+          hash: hashText("console.log(\"snake\");\n")
+        }]
+      }
+    });
+    const prompt = messages.map((message) => message.content).join("\n");
+
+    expect(prompt).toContain("Every hunk line must be a single valid JSON string");
+    expect(prompt).toContain("Escape quotes and backslashes inside code lines");
   });
 
   it("instructs tester agents to generate one-shot commands", () => {

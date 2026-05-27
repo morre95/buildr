@@ -114,10 +114,12 @@ export async function applyPatchTool(patch: TextPatch): Promise<ToolResult<TextP
   };
 }
 
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "out", "coverage", ".corepack", ".pnpm-store"]);
+
 async function walkTextFiles(root: string, visit: (path: string) => Promise<void>): Promise<void> {
   const entries = await readdir(root, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") {
+    if (SKIP_DIRS.has(entry.name)) {
       continue;
     }
 
@@ -131,5 +133,5 @@ async function walkTextFiles(root: string, visit: (path: string) => Promise<void
 }
 
 function isTextFile(name: string): boolean {
-  return /\.(cjs|css|html|js|json|jsx|md|mjs|ts|tsx|txt|yaml|yml)$/u.test(name);
+  return /\.(c|cfg|cjs|clj|cpp|cs|css|dart|erl|ex|go|h|hpp|html|ini|java|js|json|jsx|jl|kt|lua|md|mjs|php|pl|py|r|rb|rs|scala|sh|sql|svelte|swift|toml|ts|tsx|txt|vue|xml|yaml|yml|zig)$/u.test(name);
 }

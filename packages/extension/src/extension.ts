@@ -1105,26 +1105,53 @@ async function answerGeneralQuestion(question: string, fileMentions: string[], s
       content: roundText,
       toolCalls
     });
-    for (const toolCall of toolCalls) {
-      const result = await runAskTool(toolCall);
-      events.push(eventFromToolResult(
-        `ask:${toolCall.name}:${Date.now()}`,
-        `Ask tool: ${toolCall.name}`,
-        toolCall.name,
-        result,
-        result.provenance[0]?.source
-      ));
-      for (const provenance of result.provenance) {
-        if (provenance.kind === "file") {
-          consulted.add(provenance.source);
+    const capabilities = await configuredCore.model.getCapabilities(modelId);
+    const allReadOnly = toolCalls.every((tc) => tc.name === "read_file" || tc.name === "search_codebase" || tc.name === "read_diagnostics");
+    if (capabilities.parallelTools && allReadOnly && toolCalls.length > 1) {
+      const results = await Promise.all(toolCalls.map((toolCall) => runAskTool(toolCall)));
+      for (const [index, toolCall] of toolCalls.entries()) {
+        const result = results[index]!;
+        events.push(eventFromToolResult(
+          `ask:${toolCall.name}:${Date.now()}`,
+          `Ask tool: ${toolCall.name}`,
+          toolCall.name,
+          result,
+          result.provenance[0]?.source
+        ));
+        for (const provenance of result.provenance) {
+          if (provenance.kind === "file") {
+            consulted.add(provenance.source);
+          }
         }
+        modelMessages.push({
+          role: "tool",
+          name: toolCall.name,
+          toolCallId: toolCall.id,
+          content: JSON.stringify(result)
+        });
       }
-      modelMessages.push({
-        role: "tool",
-        name: toolCall.name,
-        toolCallId: toolCall.id,
-        content: JSON.stringify(result)
-      });
+    } else {
+      for (const toolCall of toolCalls) {
+        const result = await runAskTool(toolCall);
+        events.push(eventFromToolResult(
+          `ask:${toolCall.name}:${Date.now()}`,
+          `Ask tool: ${toolCall.name}`,
+          toolCall.name,
+          result,
+          result.provenance[0]?.source
+        ));
+        for (const provenance of result.provenance) {
+          if (provenance.kind === "file") {
+            consulted.add(provenance.source);
+          }
+        }
+        modelMessages.push({
+          role: "tool",
+          name: toolCall.name,
+          toolCallId: toolCall.id,
+          content: JSON.stringify(result)
+        });
+      }
     }
     renderCurrentState(stepPanel);
   }

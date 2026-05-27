@@ -87,8 +87,8 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
   async getCapabilities(): Promise<ModelCapabilities> {
     return {
       nativeTools: true,
-      parallelTools: false,
-      streamingToolCalls: false,
+      parallelTools: this.provider === "openai" || this.provider === "openrouter",
+      streamingToolCalls: true,
       structuredOutput: true,
       jsonSchemaOutput: false,
       thinking: false,
@@ -161,6 +161,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
         }
         const data = trimmed.slice("data:".length).trim();
         if (data === "[DONE]") {
+          yield* flushPendingToolCalls(toolCalls);
           yield { type: "done" };
           continue;
         }
@@ -189,14 +190,9 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
           };
           toolCalls.set(index, next);
         }
-        if (parsed.choices?.[0]?.finish_reason === "tool_calls") {
-          for (const toolCall of toolCalls.values()) {
-            const normalized = parseToolCall(toolCall);
-            if (normalized !== undefined) {
-              yield { type: "tool_call", toolCall: normalized };
-            }
-          }
-          toolCalls.clear();
+        const finishReason = parsed.choices?.[0]?.finish_reason;
+        if (finishReason === "tool_calls" || (finishReason === "stop" && toolCalls.size > 0)) {
+          yield* flushPendingToolCalls(toolCalls);
         }
       }
     }
@@ -334,6 +330,16 @@ function toOpenAIMessage(message: ChatRequest["messages"][number]): Record<strin
     role: message.role,
     content: message.content
   };
+}
+
+function* flushPendingToolCalls(toolCalls: Map<number, { id?: string; name?: string; arguments: string }>): Iterable<ModelDelta> {
+  for (const toolCall of toolCalls.values()) {
+    const normalized = parseToolCall(toolCall);
+    if (normalized !== undefined) {
+      yield { type: "tool_call", toolCall: normalized };
+    }
+  }
+  toolCalls.clear();
 }
 
 function parseToolCall(toolCall: { id?: string; name?: string; arguments: string }): ToolCall | undefined {

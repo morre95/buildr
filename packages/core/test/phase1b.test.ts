@@ -56,10 +56,12 @@ describe("Phase 1B hardening", () => {
     expect(gate.summary).not.toContain("passed with verification evidence");
   });
 
-  it("keeps LM Studio native adapter as an explicit skeleton", async () => {
+  it("creates a working LM Studio native adapter", async () => {
     const adapter = new LMStudioNativeAdapter();
-    const iterator = adapter.chat({ model: "local", messages: [] });
+    const capabilities = await adapter.getCapabilities();
 
-    await expect(iterator.next()).rejects.toThrow("Phase 1B skeleton");
+    expect(capabilities.nativeTools).toBe(false);
+    expect(capabilities.structuredOutput).toBe(true);
+    expect(adapter.provider).toBe("lmstudio-native");
   });
 });

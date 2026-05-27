@@ -83,6 +83,75 @@ describe("cloud provider adapters", () => {
     expect(chunks).toEqual(["ok"]);
   });
 
+  it("emits Anthropic streamed tool calls", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode([
+          `event: content_block_start`,
+          `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_01", name: "read_file" } })}`,
+          "",
+          `event: content_block_delta`,
+          `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"path\":" } })}`,
+          "",
+          `event: content_block_delta`,
+          `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "\"README.md\"}" } })}`,
+          "",
+          `event: content_block_stop`,
+          `data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
+          "",
+          `event: message_stop`,
+          `data: ${JSON.stringify({ type: "message_stop" })}`,
+          ""
+        ].join("\n")));
+        controller.close();
+      }
+    }), { status: 200 })));
+    const adapter = new AnthropicAdapter({ apiKey: "anth-test" });
+
+    const toolCalls = [];
+    for await (const delta of adapter.chat({ model: "claude-test", messages: [{ role: "user", content: "read the readme" }], tools: [{ name: "read_file", description: "Read file", inputSchema: { type: "object" }, permission: "auto_allow" }] })) {
+      if (delta.type === "tool_call") {
+        toolCalls.push(delta.toolCall);
+      }
+    }
+
+    expect(toolCalls).toEqual([{ id: "toolu_01", name: "read_file", arguments: { path: "README.md" } }]);
+  });
+
+  it("sends Anthropic tool results as tool_result content blocks", async () => {
+    const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push({ url, init });
+      return new Response(new ReadableStream({
+        start(controller) {
+          const encoder = new TextEncoder();
+          controller.enqueue(encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "done" } })}\n\n`));
+          controller.enqueue(encoder.encode(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`));
+          controller.close();
+        }
+      }), { status: 200 });
+    }));
+    const adapter = new AnthropicAdapter({ apiKey: "anth-test" });
+
+    for await (const _delta of adapter.chat({
+      model: "claude-test",
+      messages: [
+        { role: "user", content: "read it" },
+        { role: "assistant", content: "", toolCalls: [{ id: "toolu_01", name: "read_file", arguments: { path: "a.ts" } }] },
+        { role: "tool", content: "file contents here", toolCallId: "toolu_01", name: "read_file" }
+      ]
+    })) {
+      // Exhaust stream.
+    }
+
+    const body = JSON.parse(requests[0]!.init?.body as string);
+    const assistantMsg = body.messages.find((m: Record<string, unknown>) => m.role === "assistant");
+    expect(assistantMsg.content).toEqual([{ type: "tool_use", id: "toolu_01", name: "read_file", input: { path: "a.ts" } }]);
+    const toolResultMsg = body.messages.find((m: Record<string, unknown>) => m.role === "user" && Array.isArray(m.content));
+    expect(toolResultMsg.content).toEqual([{ type: "tool_result", tool_use_id: "toolu_01", content: "file contents here" }]);
+  });
+
   it("lists Anthropic models and streams text deltas", async () => {
     const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {

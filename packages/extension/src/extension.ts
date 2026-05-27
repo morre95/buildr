@@ -131,7 +131,7 @@ interface WorkspaceContextSummary {
   warnings: string[];
 }
 
-type AgentPipelinePhase = "idle" | "planning" | "coding" | "reviewing" | "testing" | "complete" | "blocked" | "failed";
+type AgentPipelinePhase = "idle" | "planning" | "coding" | "reviewing" | "linting" | "testing" | "complete" | "blocked" | "failed";
 
 interface AgentPipelineState {
   phase: AgentPipelinePhase;
@@ -145,6 +145,7 @@ interface AgentPipelineState {
   testCases: AgentTestCase[];
   testObservations: TestRunObservation[];
   retryCount: Record<string, number>;
+  lintFixCount?: number | undefined;
   finalSummary?: string;
   warnings: string[];
   activeStream?: {
@@ -2079,6 +2080,160 @@ function getCoderRetryLimit(): number {
   );
 }
 
+function getLintFixRetryLimit(): number {
+  return vscode.workspace.getConfiguration("buildr.agents").get<number>("lintFixRetryLimit", 2);
+}
+
+interface LintGateResult {
+  passed: boolean;
+  output: string;
+  command: string;
+}
+
+async function getLintCommand(): Promise<string | undefined> {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (root !== undefined) {
+    try {
+      const raw = await readFile(resolve(root, ".buildr/rules/verification.json"), "utf8");
+      const config = JSON.parse(raw) as { levels?: { lint?: { preferredCommands?: string[] } } };
+      const preferred = config.levels?.lint?.preferredCommands?.[0]?.trim();
+      if (preferred !== undefined && preferred.length > 0) {
+        return preferred;
+      }
+    } catch {
+      // verification.json missing or malformed -- fall through
+    }
+  }
+  return findTaskCommand("lint");
+}
+
+async function runLintGate(stepPanel: StepPanel): Promise<LintGateResult> {
+  if (agentPipelineState !== undefined) {
+    agentPipelineState.phase = "linting";
+  }
+  renderCurrentState(stepPanel);
+
+  const command = await getLintCommand();
+  if (command === undefined) {
+    const diagnostics = readDiagnosticsSummary();
+    events.push({
+      id: `lint:diagnostics:${Date.now()}`,
+      title: "Lint gate (diagnostics)",
+      status: diagnostics.count === 0 ? "completed" : "failed",
+      tool: "read_diagnostics",
+      summary: diagnostics.message,
+      evidence: { diagnosticsSummary: diagnostics.message },
+      warnings: []
+    });
+    renderCurrentState(stepPanel);
+    return {
+      passed: diagnostics.count === 0,
+      output: diagnostics.message,
+      command: "VS Code diagnostics"
+    };
+  }
+
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ".";
+  const result = await runCommandAsVscodeTask(
+    command,
+    root,
+    activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal }
+  );
+  const passed = result.exitCode === 0;
+  const output = [result.stdout, result.stderr].filter((s) => s.length > 0).join("\n").slice(0, 8000);
+  events.push({
+    id: `lint:command:${Date.now()}`,
+    title: "Lint gate",
+    status: passed ? "completed" : "failed",
+    tool: "run_terminal",
+    summary: passed ? `Lint passed: ${command}` : `Lint failed (exit ${result.exitCode ?? "unknown"}): ${command}`,
+    evidence: { command, exitCode: result.exitCode, outputExcerpt: output.slice(0, 4000) },
+    warnings: result.timedOut === true ? ["Lint command timed out."] : []
+  });
+  renderCurrentState(stepPanel);
+  return { passed, output, command };
+}
+
+async function runLintAndFixIfNeeded(stepPanel: StepPanel): Promise<void> {
+  if (agentPipelineState === undefined) {
+    return;
+  }
+
+  const maxIterations = getLintFixRetryLimit();
+  if (maxIterations <= 0) {
+    return;
+  }
+
+  const lintResult = await runLintGate(stepPanel);
+  if (lintResult.passed) {
+    return;
+  }
+
+  const lintFixCount = agentPipelineState.lintFixCount ?? 0;
+  const maxIterations = getLintFixRetryLimit();
+  if (lintFixCount >= maxIterations) {
+    events.push({
+      id: `lint:fix:exhausted:${Date.now()}`,
+      title: "Lint fix limit reached",
+      status: "blocked",
+      tool: "agent_coder",
+      summary: `Could not fix lint errors after ${maxIterations} iteration(s). Continuing without clean lint.`,
+      warnings: [`Lint still failing after ${maxIterations} lint-fix iteration(s).`]
+    });
+    agentPipelineState.warnings.push(`Lint errors remain after ${maxIterations} fix attempt(s).`);
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  agentPipelineState.lintFixCount = lintFixCount + 1;
+
+  events.push({
+    id: `lint:fix:${Date.now()}:attempt-${lintFixCount + 1}`,
+    title: `Lint fix iteration ${lintFixCount + 1}/${maxIterations}`,
+    status: "running",
+    tool: "agent_coder",
+    summary: `Sending lint errors back to the coder for fix attempt ${lintFixCount + 1}.`,
+    warnings: []
+  });
+
+  const plan = agentPipelineState.plan;
+  if (plan === undefined || plan.tasks.length === 0) {
+    return;
+  }
+
+  const task = plan.tasks[agentPipelineState.currentTaskIndex] ?? plan.tasks[plan.tasks.length - 1]!;
+  const context = await createWorkspaceContextSummary(agentPipelineState.rawTask, currentPlanMentionedFiles);
+
+  agentPipelineState.phase = "coding";
+  renderCurrentState(stepPanel);
+
+  const lintFeedbackTask: AgentPlanTask = {
+    ...task,
+    id: `${task.id}_lint_fix_${lintFixCount + 1}`,
+    title: `Fix lint errors: ${task.title}`,
+    instructions: [
+      task.instructions,
+      "",
+      "IMPORTANT: Your previous patch introduced lint errors. Fix ALL of these errors.",
+      `Lint command: ${lintResult.command}`,
+      "Lint output:",
+      lintResult.output.slice(0, 6000)
+    ].join("\n")
+  };
+
+  const coderResult = await runCoderReviewLoop(lintFeedbackTask, context, stepPanel, { review: false });
+  if (coderResult === undefined) {
+    return;
+  }
+  agentPipelineState.coderResults.push(coderResult);
+  queuedPatchApprovals.push(...coderResult.patches.map((patch) => createAgentPatchApproval(lintFeedbackTask, coderResult, patch)));
+  pendingApproval = queuedPatchApprovals.shift();
+  if (pendingApproval !== undefined) {
+    events.push(eventFromPermissionDecision(pendingApproval, "ask"));
+  }
+  renderCurrentState(stepPanel);
+}
+
 async function createValidatedPatches(coderOutput: CoderOutput, snapshots: AgentFileSnapshot[]): Promise<TextPatch[]> {
   const snapshotByPath = new Map(snapshots.map((snapshot) => [normalizeWorkspacePath(snapshot.path), snapshot]));
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -2530,8 +2685,16 @@ async function handleApproval(message: ApprovalMessage, stepPanel: StepPanel): P
         return;
       }
 
+      if (agentPipelineState !== undefined) {
+        await runLintAndFixIfNeeded(stepPanel);
+        if (pendingApproval !== undefined) {
+          return;
+        }
+      }
+
       if (agentPipelineState?.verificationMode === "skip") {
-        completeAgentPipeline("Fast Agent patch applied. Verification was skipped for speed.");
+        const lintNote = (agentPipelineState.lintFixCount ?? 0) > 0 ? " Lint fixes were applied." : "";
+        completeAgentPipeline(`Fast Agent patch applied.${lintNote}`);
         renderCurrentState(stepPanel, createFinalReportSummary());
         return;
       }

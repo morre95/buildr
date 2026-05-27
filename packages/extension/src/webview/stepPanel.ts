@@ -1120,7 +1120,7 @@ function renderModelState(model: WebviewModelState | undefined): string {
 function renderActivity(state: StepPanelState): string {
   const pending = state.pendingApproval !== undefined;
   const phase = state.agentPipeline?.phase;
-  const agentWorking = phase === "planning" || phase === "coding" || phase === "reviewing" || phase === "testing";
+  const agentWorking = phase === "planning" || phase === "coding" || phase === "reviewing" || phase === "linting" || phase === "testing";
   const streamActive = state.stream?.active === true;
 
   if (!pending && !state.running && !streamActive && !agentWorking) {
@@ -1169,6 +1169,8 @@ function activityLabel(state: StepPanelState, phase: string | undefined): string
       return "LLM is writing changes...";
     case "reviewing":
       return "LLM is reviewing changes...";
+    case "linting":
+      return "Running lint checks...";
     case "testing":
       return "LLM is preparing verification...";
     default:
@@ -1189,8 +1191,11 @@ function activityDetail(state: StepPanelState, phase: string | undefined): strin
   if (state.running && state.mode === "plan") {
     return "Preparing a validated plan.";
   }
-  if (state.running && state.mode === "fast-agent") {
+  if (state.running && state.mode === "fast-agent" && phase !== "linting") {
     return "Skipping planner, reviewer, and tester for a small change.";
+  }
+  if (phase === "linting") {
+    return "Checking for lint errors in patched files.";
   }
   if (state.agentPipeline?.plan !== undefined && phase !== undefined) {
     const task = state.agentPipeline.plan.tasks[state.agentPipeline.currentTaskIndex];

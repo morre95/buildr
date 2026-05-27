@@ -162,6 +162,13 @@
           "minimum": 0,
           "description": "Maximum coder/reviewer attempts per agent task. Set to 0 for Auto: 5 attempts for local models and 3 attempts for cloud models."
         },
+        "buildr.agents.lintFixRetryLimit": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Maximum number of lint-fix iterations before continuing without clean lint. Set to 0 to disable the lint gate."
+        },
         "buildr.cost.inputUsdPerMillion": {
           "type": "number",
           "default": 0,

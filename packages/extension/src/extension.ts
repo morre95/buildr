@@ -2147,7 +2147,7 @@ async function runLintGate(stepPanel: StepPanel): Promise<LintGateResult> {
     status: passed ? "completed" : "failed",
     tool: "run_terminal",
     summary: passed ? `Lint passed: ${command}` : `Lint failed (exit ${result.exitCode ?? "unknown"}): ${command}`,
-    evidence: { command, exitCode: result.exitCode, outputExcerpt: output.slice(0, 4000) },
+    evidence: { command, exitCode: result.exitCode ?? 1, outputExcerpt: output.slice(0, 4000) },
     warnings: result.timedOut === true ? ["Lint command timed out."] : []
   });
   renderCurrentState(stepPanel);
@@ -2170,7 +2170,6 @@ async function runLintAndFixIfNeeded(stepPanel: StepPanel): Promise<void> {
   }
 
   const lintFixCount = agentPipelineState.lintFixCount ?? 0;
-  const maxIterations = getLintFixRetryLimit();
   if (lintFixCount >= maxIterations) {
     events.push({
       id: `lint:fix:exhausted:${Date.now()}`,

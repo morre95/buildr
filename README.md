@@ -26,15 +26,11 @@ The system have different modes depending of what the user wants to do. The mode
 
 Because the Agent mode is verry slow. Normally it is minimum 5 LLM calls before the every thing is finished. This is the workflow for the agent mode:
 
-1. 
-  architect, creates a plan.
-2. 
-  coder,  writes structured diffs.
-3. 
-  reviewer, reviews coder and sends output for the user to approve.
+1. architect, creates a plan.
+2. coder,  writes structured diffs.
+3. reviewer, reviews coder and sends output for the user to approve.
 4. after approval, tester generates test commands.
-5. 
-  after test execution, tester inspects results again.
+5. after test execution, tester inspects results again.
 
 So minimum 3 LLM calls before the user even sees a patch and 5 total to see a final result. Therefor was the fast agent mode a nice thing to have to skip certain steps. The fast mode skips **architect**, **reviewer** and **tester** LLM passes to make it significant faster.
 

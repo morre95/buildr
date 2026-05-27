@@ -17,7 +17,13 @@ export interface WorkspaceIndex {
 }
 
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", "out", "coverage", ".corepack", ".pnpm-store"]);
-const TEXT_EXTENSIONS = new Set([".cjs", ".css", ".html", ".js", ".json", ".jsx", ".md", ".mjs", ".ts", ".tsx", ".txt", ".yaml", ".yml"]);
+const TEXT_EXTENSIONS = new Set([
+  ".c", ".cfg", ".cjs", ".clj", ".cpp", ".cs", ".css", ".dart", ".erl", ".ex",
+  ".go", ".h", ".hpp", ".html", ".ini", ".java", ".js", ".json", ".jsx", ".jl",
+  ".kt", ".lua", ".md", ".mjs", ".php", ".pl", ".py", ".r", ".rb", ".rs",
+  ".scala", ".sh", ".sql", ".svelte", ".swift", ".toml", ".ts", ".tsx", ".txt",
+  ".vue", ".xml", ".yaml", ".yml", ".zig"
+]);
 
 export async function buildWorkspaceIndex(root: string): Promise<WorkspaceIndex> {
   const firewall = await createWorkspaceFirewall(root);
@@ -66,7 +72,7 @@ async function walk(root: string, visit: (path: string) => Promise<void>): Promi
 }
 
 function extractSymbols(content: string): string[] {
-  const matches = content.matchAll(/\b(?:export\s+)?(?:class|function|interface|type|const)\s+([A-Za-z_$][\w$]*)/gu);
+  const matches = content.matchAll(/\b(?:export\s+)?(?:class|function|interface|type|const|def|fn|func|pub\s+fn|fun|val|var|struct|enum|trait|impl|module|object)\s+([A-Za-z_$][\w$]*)/gu);
   return Array.from(matches, (match) => match[1]).filter((symbol): symbol is string => symbol !== undefined).slice(0, 50);
 }
 

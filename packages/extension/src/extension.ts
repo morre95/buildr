@@ -1434,7 +1434,7 @@ function inferFastAgentNewFileTarget(rawTask: string): string | undefined {
 }
 
 function isFastAgentEditablePath(path: string): boolean {
-  return /\.(cjs|css|html|js|json|jsx|md|mjs|ts|tsx|txt|yaml|yml)$/u.test(path);
+  return /\.(c|cfg|cjs|clj|cpp|cs|css|dart|erl|ex|go|h|hpp|html|ini|java|js|json|jsx|jl|kt|lua|md|mjs|php|pl|py|r|rb|rs|scala|sh|sql|svelte|swift|toml|ts|tsx|txt|vue|xml|yaml|yml|zig)$/u.test(path);
 }
 
 function createSubAgentSourceContext(context: WorkspaceContextSummary, target: PlanWriteTarget): string {

@@ -151,7 +151,14 @@ export class StepPanel {
     if (this.panel === undefined) {
       return;
     }
-    this.panel.webview.html = renderState(state);
+    if (created) {
+      this.panel.webview.html = renderState(state);
+    } else {
+      void this.panel.webview.postMessage({
+        type: "stateUpdate",
+        sections: renderStateSections(state)
+      });
+    }
     if (created || options.reveal === true) {
       this.panel.reveal(vscode.ViewColumn.Beside);
     }
@@ -281,6 +288,40 @@ export class StepPanel {
     });
     return created;
   }
+}
+
+interface StateSections {
+  content: string;
+  activity: string;
+  running: boolean;
+  mode: BuildrChatMode;
+  model: string;
+  sessions: string;
+}
+
+function renderStateSections(state: StepPanelState): StateSections {
+  const events = state.events
+    .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
+    .join("");
+  const messages = state.messages
+    .map((message) => `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><p>${escapeHtml(message.text)}</p></article>`)
+    .join("");
+  const pending = state.pendingApproval === undefined ? "" : renderPendingApproval(state.pendingApproval);
+  const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
+  const stream = renderStream(state.stream);
+  const tokenBudget = renderTokenBudget(state.tokenBudget);
+  const agentPipeline = renderAgentPipeline(state.agentPipeline);
+  const canRunPlan = state.plan !== undefined && !state.running && state.pendingApproval === undefined;
+  const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
+
+  return {
+    content: `${messages}${tokenBudget}${agentPipeline}${stream}${plan}<section><h2>Execution</h2><ol>${events}</ol></section>${pending}${finalSummary}`,
+    activity: renderActivity(state),
+    running: state.running,
+    mode: state.mode,
+    model: renderModelState(state.model),
+    sessions: renderSessionControls(state.sessions ?? [], state.activeSessionId)
+  };
 }
 
 function renderState(state: StepPanelState): string {
@@ -775,6 +816,10 @@ function renderState(state: StepPanelState): string {
       });
 
       window.addEventListener("message", (event) => {
+        if (event.data?.type === "stateUpdate") {
+          applyStateUpdate(event.data.sections);
+          return;
+        }
         if (event.data?.type === "fileSearchResults") {
           renderSuggestions(event.data.results ?? []);
           return;
@@ -833,6 +878,91 @@ function renderState(state: StepPanelState): string {
             content.scrollTop = content.scrollHeight;
           }
         });
+      }
+
+      function applyStateUpdate(sections) {
+        const contentEl = document.querySelector(".content");
+        if (contentEl !== null) {
+          contentEl.innerHTML = sections.content;
+        }
+
+        const composerEl = document.getElementById("composer");
+        if (composerEl !== null) {
+          const existingActivity = composerEl.querySelector(".activity");
+          if (sections.activity) {
+            if (existingActivity !== null) {
+              existingActivity.outerHTML = sections.activity;
+            } else {
+              composerEl.insertAdjacentHTML("afterbegin", sections.activity);
+            }
+          } else if (existingActivity !== null) {
+            existingActivity.remove();
+          }
+        }
+
+        const stopBtn = document.getElementById("stop");
+        if (stopBtn !== null) {
+          stopBtn.disabled = !sections.running;
+        }
+        const sendBtn = composerEl?.querySelector("button[type='submit']");
+        if (sendBtn !== null) {
+          sendBtn.disabled = sections.running;
+        }
+        prompt.disabled = sections.running;
+
+        if (sections.mode) {
+          mode.value = sections.mode;
+        }
+
+        const modelEl = document.querySelector(".model-state");
+        if (modelEl !== null && sections.model) {
+          modelEl.outerHTML = sections.model;
+        }
+
+        const sessionEl = document.querySelector(".session-controls");
+        if (sessionEl !== null && sections.sessions) {
+          sessionEl.outerHTML = sections.sessions;
+        }
+
+        document.querySelectorAll("[data-approval]").forEach((button) => {
+          button.addEventListener("click", () => {
+            vscode.postMessage({
+              type: "approval",
+              id: button.getAttribute("data-approval-id"),
+              decision: button.getAttribute("data-approval")
+            });
+          });
+        });
+
+        document.getElementById("run-plan")?.addEventListener("click", () => {
+          vscode.postMessage({ type: "runPlan" });
+        });
+        document.getElementById("run-plan-fast")?.addEventListener("click", () => {
+          vscode.postMessage({ type: "runPlanFast" });
+        });
+        document.getElementById("change-plan")?.addEventListener("click", () => {
+          vscode.postMessage({ type: "changePlan" });
+        });
+
+        const newSessionBtn = document.getElementById("new-session");
+        newSessionBtn?.addEventListener("click", () => {
+          vscode.postMessage({ type: "newSession" });
+        });
+        const deleteSessionBtn = document.getElementById("delete-session");
+        deleteSessionBtn?.addEventListener("click", () => {
+          const sel = document.getElementById("session");
+          if (sel?.value?.length > 0) {
+            vscode.postMessage({ type: "deleteSession", id: sel.value });
+          }
+        });
+        const sel = document.getElementById("session");
+        sel?.addEventListener("change", () => {
+          if (sel.value.length > 0) {
+            vscode.postMessage({ type: "openSession", id: sel.value });
+          }
+        });
+
+        scrollContentToLatest();
       }
 
       function renderSuggestions(results) {

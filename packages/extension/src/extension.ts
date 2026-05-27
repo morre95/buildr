@@ -147,6 +147,12 @@ interface AgentPipelineState {
   retryCount: Record<string, number>;
   finalSummary?: string;
   warnings: string[];
+  activeStream?: {
+    role: string;
+    label: string;
+    raw: string;
+    active: boolean;
+  } | undefined;
 }
 
 interface AgentCoderPipelineResult {
@@ -1865,6 +1871,19 @@ async function runCoderReviewLoop(
     agentPipelineState.retryCount[task.id] = attempt - 1;
     const files = await createFileSnapshots(task.targetFiles);
     let coder: AgentJsonEnvelope<CoderOutput>;
+
+    const streamLabel = `Coder: ${task.title} (attempt ${attempt})`;
+    agentPipelineState.activeStream = { role: "coder", label: streamLabel, raw: "", active: true };
+    stepPanel.postAgentStreamStart("coder", streamLabel);
+    renderCurrentState(stepPanel);
+
+    const coderDelta = (content: string) => {
+      if (agentPipelineState?.activeStream !== undefined) {
+        agentPipelineState.activeStream.raw += content;
+      }
+      stepPanel.postAgentStreamDelta(content);
+    };
+
     try {
       coder = await invokeJsonAgent("coder", createCoderMessages({
         requestId: createAgentRequestId("coder"),
@@ -1873,8 +1892,13 @@ async function runCoderReviewLoop(
           files,
           ...(feedback === undefined ? {} : { feedback })
         }
-      }), validateCoderOutput);
+      }), validateCoderOutput, coderDelta);
     } catch (error) {
+      if (agentPipelineState.activeStream !== undefined) {
+        agentPipelineState.activeStream.active = false;
+      }
+      stepPanel.postAgentStreamComplete();
+
       const summary = error instanceof Error ? error.message : String(error);
       events.push({
         id: `agent:coder:${task.id}:${attempt}:invalid-json`,
@@ -1894,6 +1918,11 @@ async function runCoderReviewLoop(
       ].join("\n");
       continue;
     }
+
+    if (agentPipelineState.activeStream !== undefined) {
+      agentPipelineState.activeStream.active = false;
+    }
+    stepPanel.postAgentStreamComplete();
     let patches: TextPatch[];
     try {
       patches = await createValidatedPatches(coder.data, files);
@@ -1948,6 +1977,7 @@ async function runCoderReviewLoop(
     }
 
     agentPipelineState.phase = "reviewing";
+    agentPipelineState.activeStream = undefined;
     const reviewer = await invokeJsonAgent("reviewer", createReviewerMessages({
       requestId: createAgentRequestId("reviewer"),
       task,
@@ -2159,10 +2189,11 @@ async function inspectAgentTestResults(stepPanel: StepPanel): Promise<void> {
 async function invokeJsonAgent<TData>(
   role: AgentRole,
   messagesForModel: CoreChatMessage[],
-  validateData: (value: unknown) => TData
+  validateData: (value: unknown) => TData,
+  onDelta?: (content: string) => void
 ): Promise<AgentJsonEnvelope<TData>> {
   const requestId = extractAgentRequestId(messagesForModel);
-  const rawResponse = await invokeAgentModel(messagesForModel);
+  const rawResponse = await invokeAgentModel(messagesForModel, onDelta);
   try {
     return parseAgentEnvelope(rawResponse, role, requestId, validateData);
   } catch (error) {
@@ -2182,7 +2213,7 @@ async function invokeJsonAgent<TData>(
       evidence: { outputExcerpt: rawResponse.slice(0, 4000) },
       warnings: []
     });
-    const repairedResponse = await invokeAgentModel(repairMessages);
+    const repairedResponse = await invokeAgentModel(repairMessages, onDelta);
     try {
       const repaired = parseAgentEnvelope(repairedResponse, role, requestId, validateData);
       events.push({
@@ -2206,7 +2237,10 @@ async function invokeJsonAgent<TData>(
   }
 }
 
-async function invokeAgentModel(messagesForModel: CoreChatMessage[]): Promise<string> {
+async function invokeAgentModel(
+  messagesForModel: CoreChatMessage[],
+  onDelta?: (content: string) => void
+): Promise<string> {
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
   let rawResponse = "";
@@ -2217,6 +2251,7 @@ async function invokeAgentModel(messagesForModel: CoreChatMessage[]): Promise<st
   }, activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })) {
     if (delta.type === "text" && delta.content !== undefined) {
       rawResponse += delta.content;
+      onDelta?.(delta.content);
     }
   }
   return rawResponse;
@@ -2367,6 +2402,7 @@ function completeAgentPipeline(summary: string): void {
   if (agentPipelineState !== undefined) {
     agentPipelineState.phase = "complete";
     agentPipelineState.finalSummary = summary;
+    agentPipelineState.activeStream = undefined;
   }
   messages.push({ role: "assistant", text: summary });
 }
@@ -2377,6 +2413,7 @@ function failAgentPipeline(error: unknown): void {
     agentPipelineState.phase = "failed";
     agentPipelineState.finalSummary = summary;
     agentPipelineState.warnings.push(summary);
+    agentPipelineState.activeStream = undefined;
   }
   events.push({
     id: `agent:failed:${Date.now()}`,

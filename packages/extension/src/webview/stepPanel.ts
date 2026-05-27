@@ -83,6 +83,12 @@ export interface WebviewAgentPipelineState {
   testCases: Array<{ id: string; title: string; command: string }>;
   finalSummary?: string;
   warnings: string[];
+  activeStream?: {
+    role: string;
+    label: string;
+    raw: string;
+    active: boolean;
+  } | undefined;
 }
 
 export class StepPanel {
@@ -196,6 +202,27 @@ export class StepPanel {
     void this.panel?.webview.postMessage({
       type: "streamError",
       status
+    });
+  }
+
+  postAgentStreamStart(role: string, label: string): void {
+    void this.panel?.webview.postMessage({
+      type: "agentStreamStart",
+      role,
+      label
+    });
+  }
+
+  postAgentStreamDelta(content: string): void {
+    void this.panel?.webview.postMessage({
+      type: "agentStreamDelta",
+      content
+    });
+  }
+
+  postAgentStreamComplete(): void {
+    void this.panel?.webview.postMessage({
+      type: "agentStreamComplete"
     });
   }
 
@@ -840,6 +867,22 @@ function renderState(state: StepPanelState): string {
           scrollContentToLatest();
           return;
         }
+        if (event.data?.type === "agentStreamStart") {
+          setAgentStreamLabel(event.data.label ?? "Coder output");
+          setAgentStreamRaw("");
+          setAgentStreamOpen(true);
+          scrollContentToLatest();
+          return;
+        }
+        if (event.data?.type === "agentStreamDelta") {
+          appendAgentStreamRaw(event.data.content ?? "");
+          scrollContentToLatest();
+          return;
+        }
+        if (event.data?.type === "agentStreamComplete") {
+          setAgentStreamOpen(false);
+          return;
+        }
         if (event.data?.type === "editPrompt") {
           prompt.disabled = false;
           mode.value = "plan";
@@ -868,6 +911,36 @@ function renderState(state: StepPanelState): string {
         if (rawElement !== null) {
           rawElement.textContent += content;
           rawElement.scrollTop = rawElement.scrollHeight;
+        }
+      }
+
+      function setAgentStreamLabel(label) {
+        const el = document.getElementById("agent-stream-label");
+        if (el !== null) {
+          el.textContent = label;
+        }
+      }
+
+      function setAgentStreamRaw(raw) {
+        const el = document.getElementById("agent-stream-raw");
+        if (el !== null) {
+          el.textContent = raw;
+          el.scrollTop = el.scrollHeight;
+        }
+      }
+
+      function appendAgentStreamRaw(content) {
+        const el = document.getElementById("agent-stream-raw");
+        if (el !== null) {
+          el.textContent += content;
+          el.scrollTop = el.scrollHeight;
+        }
+      }
+
+      function setAgentStreamOpen(open) {
+        const el = document.getElementById("agent-stream-details");
+        if (el !== null) {
+          el.open = open;
         }
       }
 
@@ -1232,9 +1305,16 @@ function renderAgentPipeline(agentPipeline: WebviewAgentPipelineState | undefine
   const warnings = agentPipeline.warnings.length === 0
     ? ""
     : `<pre>${escapeHtml(agentPipeline.warnings.join("\n"))}</pre>`;
+  const activeStream = agentPipeline.activeStream === undefined
+    ? ""
+    : `<details id="agent-stream-details" class="stream-output" ${agentPipeline.activeStream.active ? "open" : ""}>
+        <summary id="agent-stream-label">${escapeHtml(agentPipeline.activeStream.label)}</summary>
+        <pre id="agent-stream-raw">${escapeHtml(agentPipeline.activeStream.raw)}</pre>
+      </details>`;
   return `<section aria-label="Agent pipeline">
     <h2>Agent Pipeline</h2>
     <p>Phase: ${escapeHtml(agentPipeline.phase)} · Task ${agentPipeline.currentTaskIndex + 1}/${taskCount}</p>
+    ${activeStream}
     ${reviews}
     ${tests}
     ${diffs}

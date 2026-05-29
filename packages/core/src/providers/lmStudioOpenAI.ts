@@ -61,12 +61,12 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
   readonly displayName: string;
   readonly provider: Extract<ProviderId, "lmstudio-openai" | "openai-compatible" | "openai" | "openrouter">;
 
-  private readonly baseUrl: string;
+  protected readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly getApiKey: (() => Promise<string | undefined>) | undefined;
   private readonly defaultHeaders: Record<string, string>;
   private readonly chatPath: string;
-  private readonly modelsPath: string;
+  protected readonly modelsPath: string;
   private readonly embeddings: boolean;
   private readonly includeTemperature: boolean;
 
@@ -218,7 +218,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
     }));
   }
 
-  private async createHeaders(): Promise<Record<string, string>> {
+  protected async createHeaders(): Promise<Record<string, string>> {
     const apiKey = this.apiKey ?? await this.getApiKey?.();
     return {
       "content-type": "application/json",
@@ -249,6 +249,33 @@ export class OpenAIAdapter extends OpenAICompatibleAdapter {
       includeTemperature: false
     });
   }
+
+  async getContextWindow(modelId: string): Promise<number | undefined> {
+    return openAiContextWindow(modelId);
+  }
+}
+
+// The OpenAI API does not expose context windows, so these are the published
+// per-model values keyed by id prefix. Unknown ids fall back to the adapter's
+// recommendedContextTokens instead of guessing here.
+function openAiContextWindow(modelId: string): number | undefined {
+  const id = modelId.toLowerCase();
+  if (id.startsWith("gpt-4.1")) {
+    return 1047576;
+  }
+  if (id.startsWith("gpt-4o") || id.startsWith("gpt-4-turbo")) {
+    return 128000;
+  }
+  if (id.startsWith("o1") || id.startsWith("o3") || id.startsWith("o4")) {
+    return 200000;
+  }
+  if (id.startsWith("gpt-4")) {
+    return 8192;
+  }
+  if (id.startsWith("gpt-3.5")) {
+    return 16385;
+  }
+  return undefined;
 }
 
 export class OpenRouterAdapter extends OpenAICompatibleAdapter {
@@ -267,6 +294,20 @@ export class OpenRouterAdapter extends OpenAICompatibleAdapter {
         ...(options.defaultHeaders ?? {})
       }
     });
+  }
+
+  async getContextWindow(modelId: string, options: ChatOptions = {}): Promise<number | undefined> {
+    const init: RequestInit = { headers: await this.createHeaders() };
+    if (options.signal !== undefined) {
+      init.signal = options.signal;
+    }
+    const response = await fetch(`${this.baseUrl}${this.modelsPath}`, init);
+    if (!response.ok) {
+      return undefined;
+    }
+    const data = (await response.json()) as { data?: Array<{ id?: string; context_length?: number }> };
+    const model = (data.data ?? []).find((entry) => entry.id === modelId);
+    return model !== undefined && typeof model.context_length === "number" ? model.context_length : undefined;
   }
 }
 

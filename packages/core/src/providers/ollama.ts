@@ -59,6 +59,28 @@ export class OllamaAdapter implements ModelAdapter {
     };
   }
 
+  async getContextWindow(modelId: string, options: ChatOptions = {}): Promise<number | undefined> {
+    const init: RequestInit = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: modelId })
+    };
+    if (options.signal !== undefined) {
+      init.signal = options.signal;
+    }
+    const response = await fetch(`${this.baseUrl}/api/show`, init);
+    if (!response.ok) {
+      return undefined;
+    }
+    const data = (await response.json()) as { model_info?: Record<string, unknown> };
+    for (const [key, value] of Object.entries(data.model_info ?? {})) {
+      if (key.endsWith(".context_length") && typeof value === "number") {
+        return value;
+      }
+    }
+    return undefined;
+  }
+
   async *chat(request: ChatRequest, options: ChatOptions = {}): AsyncIterable<ModelDelta> {
     const init: RequestInit = {
       method: "POST",

@@ -98,6 +98,8 @@ let currentPlanWarnings: string[] = [];
 let tokenBudgetState: TokenBudgetState | undefined;
 let currentPlanMentionedFiles: string[] = [];
 let finalSummaryState: string | undefined;
+let contextWindowTokens: number | undefined;
+let contextWindowKey: string | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let providerSecrets: BuildrSecretStore | undefined;
 let activeSessionId = "";
@@ -576,6 +578,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await config.update("modelId", modelId, vscode.ConfigurationTarget.Workspace);
 
       vscode.window.showInformationMessage(`Buildr model set to ${provider.label}.`);
+      void refreshContextWindow(stepPanel);
     }),
     vscode.commands.registerCommand("buildr.openSettings", openBuildrSettings),
     vscode.commands.registerCommand("buildr.indexWorkspace", async () => {
@@ -3275,6 +3278,7 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string, options
   if (finalSummary !== undefined) {
     finalSummaryState = finalSummary;
   }
+  void refreshContextWindow(stepPanel);
   persistActiveAgentSession();
   const state = {
     events,
@@ -3302,13 +3306,42 @@ function estimateContextTokens(msgs: ChatMessage[]): number {
   return Math.ceil(totalChars / 4);
 }
 
-function getContextSize(): { approxTokens: number; hardTokenCap?: number } {
+function getContextSize(): { approxTokens: number; contextWindow?: number } {
   const approxTokens = estimateContextTokens(messages);
-  const budgetConfig = getTokenBudgetConfig();
-  if (budgetConfig.unlimited || budgetConfig.hardTokenCap === undefined) {
-    return { approxTokens };
+  return contextWindowTokens === undefined ? { approxTokens } : { approxTokens, contextWindow: contextWindowTokens };
+}
+
+// Resolves the active model's context window once per provider/model/baseUrl and
+// caches it. The lookup is provider-specific (real query where supported,
+// otherwise the adapter's recommended capability), so it runs off the render
+// path and re-renders when the value arrives.
+async function refreshContextWindow(stepPanel: StepPanel): Promise<void> {
+  const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
+  const modelId = getConfiguredModelId();
+  const key = `${provider}|${baseUrl}|${modelId}`;
+  if (key === contextWindowKey) {
+    return;
   }
-  return { approxTokens, hardTokenCap: budgetConfig.hardTokenCap };
+  contextWindowKey = key;
+
+  let resolved: number | undefined;
+  try {
+    const adapter = createConfiguredCore().model;
+    if (adapter.getContextWindow !== undefined) {
+      resolved = await adapter.getContextWindow(modelId);
+    }
+    if (resolved === undefined) {
+      const capabilities = await adapter.getCapabilities(modelId);
+      resolved = capabilities.maxContextTokens ?? capabilities.recommendedContextTokens;
+    }
+  } catch {
+    resolved = undefined;
+  }
+
+  if (contextWindowKey === key) {
+    contextWindowTokens = resolved;
+    renderCurrentState(stepPanel);
+  }
 }
 
 function getMaxParallelSubAgents(): number {

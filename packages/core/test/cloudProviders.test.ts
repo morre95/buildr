@@ -183,6 +183,30 @@ describe("cloud provider adapters", () => {
     expect(JSON.parse(requests[1]!.init?.body as string)).toMatchObject({ system: "sys", stream: true });
     expect(chunks).toEqual(["hello"]);
   });
+
+  it("reads the OpenRouter context window from /v1/models", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      requests.push({ url, init });
+      return new Response(JSON.stringify({ data: [
+        { id: "other/model", context_length: 8192 },
+        { id: "anthropic/claude", context_length: 200000 }
+      ] }), { status: 200 });
+    }));
+    const adapter = new OpenRouterAdapter({ apiKey: "or-test" });
+
+    expect(await adapter.getContextWindow("anthropic/claude")).toBe(200000);
+    expect(requests[0]!.url).toBe("https://openrouter.ai/api/v1/models");
+  });
+
+  it("resolves OpenAI context windows from published per-model values", async () => {
+    const adapter = new OpenAIAdapter({ apiKey: "sk-test" });
+
+    expect(await adapter.getContextWindow("gpt-4o-mini")).toBe(128000);
+    expect(await adapter.getContextWindow("gpt-4.1")).toBe(1047576);
+    expect(await adapter.getContextWindow("o3-mini")).toBe(200000);
+    expect(await adapter.getContextWindow("unknown-model")).toBeUndefined();
+  });
 });
 
 function stubJsonFetch(requests: Array<{ url: string; init: RequestInit }>, chunks: string[]): void {

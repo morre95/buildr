@@ -66,6 +66,28 @@ export class LMStudioNativeAdapter implements ModelAdapter {
     };
   }
 
+  async getContextWindow(modelId: string, options: ChatOptions = {}): Promise<number | undefined> {
+    const init: RequestInit = {};
+    if (options.signal !== undefined) {
+      init.signal = options.signal;
+    }
+    const response = await fetch(`${this.baseUrl}/api/v0/models`, init);
+    if (!response.ok) {
+      return undefined;
+    }
+    const data = (await response.json()) as {
+      data?: Array<{ id?: string; state?: string; max_context_length?: number; loaded_context_length?: number }>;
+    };
+    const model = (data.data ?? []).find((entry) => entry.id === modelId);
+    if (model === undefined) {
+      return undefined;
+    }
+    if (model.state === "loaded" && typeof model.loaded_context_length === "number") {
+      return model.loaded_context_length;
+    }
+    return typeof model.max_context_length === "number" ? model.max_context_length : undefined;
+  }
+
   async *chat(request: ChatRequest, options: ChatOptions = {}): AsyncIterable<ModelDelta> {
     const systemPrompt = request.messages
       .filter((message) => message.role === "system")

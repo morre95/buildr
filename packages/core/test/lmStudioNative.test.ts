@@ -124,7 +124,37 @@ describe("LMStudioNativeAdapter", () => {
     expect(caps.streamingToolCalls).toBe(false);
     expect(caps.structuredOutput).toBe(true);
   });
+
+  it("prefers loaded_context_length for a loaded model", async () => {
+    stubJson({
+      data: [
+        { id: "other", state: "not-loaded", max_context_length: 8192 },
+        { id: "qwen", state: "loaded", max_context_length: 262144, loaded_context_length: 32768 }
+      ]
+    });
+    const adapter = new LMStudioNativeAdapter();
+
+    expect(await adapter.getContextWindow("qwen")).toBe(32768);
+  });
+
+  it("falls back to max_context_length when not loaded", async () => {
+    stubJson({ data: [{ id: "qwen", state: "not-loaded", max_context_length: 262144 }] });
+    const adapter = new LMStudioNativeAdapter();
+
+    expect(await adapter.getContextWindow("qwen")).toBe(262144);
+  });
+
+  it("returns undefined when the model is not listed", async () => {
+    stubJson({ data: [] });
+    const adapter = new LMStudioNativeAdapter();
+
+    expect(await adapter.getContextWindow("missing")).toBeUndefined();
+  });
 });
+
+function stubJson(body: unknown): void {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status: 200 })));
+}
 
 async function collect(adapter: LMStudioNativeAdapter): Promise<void> {
   for await (const _delta of adapter.chat({ model: "local", messages: [] })) {

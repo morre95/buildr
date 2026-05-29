@@ -44,7 +44,15 @@ A slash command only triggers when it is the entire message (for example `/compa
 
 ### Context size indicator
 
-The composer toolbar shows an always-visible badge with the approximate size of the current conversation, for example `Context: ~1240 tokens`. When a non-local provider is configured with a **Hard token cap**, the badge also shows the cap (`~1240 tokens / 32000`) and turns red as the context approaches the limit. Local providers are treated as unlimited, so only the token count is shown. This makes it easy to see when it is worth running `/compact`.
+The composer toolbar shows an always-visible badge with the approximate size of the current conversation, for example `Context: ~1240 tokens`. When the active model's context window is known, the badge also shows how much of it is used, for example `Context: ~1240 tokens · 4% of 32768`, and turns red once usage passes 90%. This makes it easy to see when it is worth running `/compact`.
+
+The context window is detected per provider:
+
+- **Ollama**, **OpenRouter**, and **LM Studio (native)** are queried for the real window (`/api/show`, `/v1/models`, and `/api/v0/models` respectively). LM Studio native reports the actually loaded context length when a model is loaded.
+- **Anthropic** and **OpenAI** use published per-model values, since their APIs do not expose the window.
+- Other OpenAI-compatible endpoints fall back to the provider's recommended context size.
+
+The detected window is cached per provider/model, so it is resolved once and reused. If it cannot be determined, the badge shows the token count only, without a percentage.
 
 ## Commands
 

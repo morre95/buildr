@@ -22,6 +22,23 @@ describe("OllamaAdapter", () => {
     expect(toolCalls).toHaveLength(1);
     expect(toolCalls[0]).toMatchObject({ name: "search_codebase", arguments: { query: "Buildr" } });
   });
+
+  it("reads the context window from /api/show model_info", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      JSON.stringify({ model_info: { "general.architecture": "qwen2", "qwen2.context_length": 32768 } }),
+      { status: 200 }
+    )));
+    const adapter = new OllamaAdapter();
+
+    expect(await adapter.getContextWindow("qwen2.5-coder")).toBe(32768);
+  });
+
+  it("returns undefined when /api/show has no context length", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ model_info: {} }), { status: 200 })));
+    const adapter = new OllamaAdapter();
+
+    expect(await adapter.getContextWindow("local")).toBeUndefined();
+  });
 });
 
 function stubStream(chunks: string[]): void {

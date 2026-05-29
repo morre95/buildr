@@ -69,6 +69,7 @@ export interface ModelAdapter {
   countTokens(input: TokenCountInput): Promise<TokenCountResult>;
   listModels?(): Promise<ModelInfo[]>;
   loadModel?(modelId: string, options?: ChatOptions): Promise<void>;
+  getContextWindow?(modelId: string, options?: ChatOptions): Promise<number | undefined>;
 }
 
 export interface ToolDefinition {

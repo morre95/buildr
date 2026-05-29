@@ -60,7 +60,7 @@ export interface StepPanelState {
   tokenBudget?: TokenBudgetState;
   agentPipeline?: WebviewAgentPipelineState;
   model?: WebviewModelState;
-  contextSize?: { approxTokens: number; hardTokenCap?: number };
+  contextSize?: { approxTokens: number; contextWindow?: number };
   activeSessionId?: string;
   sessions?: SavedAgentSessionSummary[];
 }
@@ -1353,10 +1353,13 @@ function renderContextSize(contextSize: StepPanelState["contextSize"]): string {
   if (contextSize === undefined) {
     return `<span class="context-size"></span>`;
   }
-  const cap = contextSize.hardTokenCap;
-  const capSuffix = cap === undefined ? "" : ` / ${cap}`;
-  const near = cap !== undefined && contextSize.approxTokens >= cap * 0.9 ? " near-cap" : "";
-  return `<span class="context-size${near}">Context: ~${contextSize.approxTokens} tokens${escapeHtml(capSuffix)}</span>`;
+  const window = contextSize.contextWindow;
+  if (window === undefined || window <= 0) {
+    return `<span class="context-size">Context: ~${contextSize.approxTokens} tokens</span>`;
+  }
+  const percent = Math.round((contextSize.approxTokens / window) * 100);
+  const near = percent >= 90 ? " near-cap" : "";
+  return `<span class="context-size${near}">Context: ~${contextSize.approxTokens} tokens · ${percent}% of ${window}</span>`;
 }
 
 function renderTokenBudget(tokenBudget: TokenBudgetState | undefined): string {

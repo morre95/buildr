@@ -34,6 +34,18 @@ Because the Agent mode is verry slow. Normally it is minimum 5 LLM calls before 
 
 So minimum 3 LLM calls before the user even sees a patch and 5 total to see a final result. Therefor was the fast agent mode a nice thing to have to skip certain steps. The fast mode skips **architect**, **reviewer** and **tester** LLM passes to make it significant faster.
 
+## Slash Commands
+
+The chat composer supports slash commands. Type `/` at the start of the input to open an autocomplete menu listing the available commands. Pick one from the menu (or finish typing it) and send.
+
+- **`/compact`** — summarizes the conversation to shrink the context. The most recent two turns are kept as-is, and everything older is folded into a single summary message. Use this when a session has grown long and you want to reduce the context before continuing. Compaction runs locally (no LLM call) and the result is saved with the session.
+
+A slash command only triggers when it is the entire message (for example `/compact`); anything typed after it is treated as a normal prompt.
+
+### Context size indicator
+
+The composer toolbar shows an always-visible badge with the approximate size of the current conversation, for example `Context: ~1240 tokens`. When a non-local provider is configured with a **Hard token cap**, the badge also shows the cap (`~1240 tokens / 32000`) and turns red as the context approaches the limit. Local providers are treated as unlimited, so only the token count is shown. This makes it easy to see when it is worth running `/compact`.
+
 ## Commands
 
 ```bash

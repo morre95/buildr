@@ -1,5 +1,6 @@
 import {
   applyTextPatch,
+  compactAgentContext,
   createArchitectMessages,
   createCoderMessages,
   buildWorkspaceIndex,
@@ -439,6 +440,9 @@ export function activate(context: vscode.ExtensionContext): void {
   stepPanel.onStop(() => {
     stopActiveOperation(stepPanel);
   });
+  stepPanel.onCompact(() => {
+    compactConversationContext(stepPanel);
+  });
   stepPanel.onDispose(() => {
     persistActiveAgentSession();
   });
@@ -855,6 +859,45 @@ async function handlePrompt(message: PromptMessage, stepPanel: StepPanel): Promi
   }
 
   await createPlanFromGoal(prompt, message.fileMentions, stepPanel);
+}
+
+function compactConversationContext(stepPanel: StepPanel): void {
+  if (isRunning) {
+    return;
+  }
+
+  const keepRecent = 2;
+  if (messages.length <= keepRecent + 1) {
+    messages.push({ role: "assistant", text: "Conversation is already compact." });
+    renderCurrentState(stepPanel);
+    return;
+  }
+
+  const older = messages.slice(0, messages.length - keepRecent);
+  const recent = messages.slice(-keepRecent);
+  const compacted = compactAgentContext({
+    goal: latestUserGoal(older) ?? "Conversation so far",
+    transcript: older,
+    maxChars: 6000
+  });
+
+  messages = [
+    { role: "assistant", text: `Compacted ${older.length} earlier message(s):\n${compacted.text}` },
+    ...recent
+  ];
+  renderCurrentState(stepPanel);
+}
+
+function latestUserGoal(history: ChatMessage[]): string | undefined {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index];
+    if (message === undefined || message.role !== "user") {
+      continue;
+    }
+    const colonIndex = message.text.indexOf(": ");
+    return colonIndex === -1 ? message.text : message.text.slice(colonIndex + 2);
+  }
+  return undefined;
 }
 
 async function runCurrentPlanFromUi(stepPanel: StepPanel): Promise<void> {
@@ -3246,11 +3289,26 @@ function renderCurrentState(stepPanel: StepPanel, finalSummary?: string, options
     ...(pendingApproval === undefined ? {} : { pendingApproval }),
     ...(agentPipelineState === undefined ? {} : { agentPipeline: agentPipelineState }),
     model: getConfiguredModelState(),
+    contextSize: getContextSize(),
     ...(finalSummaryState === undefined ? {} : { finalSummary: finalSummaryState }),
     activeSessionId,
     sessions: getSessionSummaries()
   };
   stepPanel.showState(state, options);
+}
+
+function estimateContextTokens(msgs: ChatMessage[]): number {
+  const totalChars = msgs.reduce((sum, message) => sum + message.text.length, 0);
+  return Math.ceil(totalChars / 4);
+}
+
+function getContextSize(): { approxTokens: number; hardTokenCap?: number } {
+  const approxTokens = estimateContextTokens(messages);
+  const budgetConfig = getTokenBudgetConfig();
+  if (budgetConfig.unlimited || budgetConfig.hardTokenCap === undefined) {
+    return { approxTokens };
+  }
+  return { approxTokens, hardTokenCap: budgetConfig.hardTokenCap };
 }
 
 function getMaxParallelSubAgents(): number {

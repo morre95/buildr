@@ -60,6 +60,7 @@ export interface StepPanelState {
   tokenBudget?: TokenBudgetState;
   agentPipeline?: WebviewAgentPipelineState;
   model?: WebviewModelState;
+  contextSize?: { approxTokens: number; hardTokenCap?: number };
   activeSessionId?: string;
   sessions?: SavedAgentSessionSummary[];
 }
@@ -103,6 +104,7 @@ export class StepPanel {
   private runPlanFastHandler: (() => void) | undefined;
   private changePlanHandler: (() => void) | undefined;
   private stopHandler: (() => void) | undefined;
+  private compactHandler: (() => void) | undefined;
   private disposeHandler: (() => void) | undefined;
   private messageDisposable: vscode.Disposable | undefined;
 
@@ -146,6 +148,10 @@ export class StepPanel {
 
   onStop(handler: () => void): void {
     this.stopHandler = handler;
+  }
+
+  onCompact(handler: () => void): void {
+    this.compactHandler = handler;
   }
 
   onDispose(handler: () => void): void {
@@ -276,6 +282,11 @@ export class StepPanel {
         return;
       }
 
+      if (isMessageOfType(message, "compactContext")) {
+        this.compactHandler?.();
+        return;
+      }
+
       if (isMessageOfType(message, "runPlan")) {
         this.runPlanHandler?.();
         return;
@@ -323,6 +334,7 @@ interface StateSections {
   running: boolean;
   mode: BuildrChatMode;
   model: string;
+  contextSize: string;
   sessions: string;
 }
 
@@ -347,6 +359,7 @@ function renderStateSections(state: StepPanelState): StateSections {
     running: state.running,
     mode: state.mode,
     model: renderModelState(state.model),
+    contextSize: renderContextSize(state.contextSize),
     sessions: renderSessionControls(state.sessions ?? [], state.activeSessionId)
   };
 }
@@ -369,6 +382,7 @@ function renderState(state: StepPanelState): string {
   const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
   const sessions = renderSessionControls(state.sessions ?? [], state.activeSessionId);
   const model = renderModelState(state.model);
+  const contextSize = renderContextSize(state.contextSize);
 
   return `<!doctype html>
 <html lang="en">
@@ -593,8 +607,20 @@ function renderState(state: StepPanelState): string {
 
       .toolbar {
         display: flex;
+        align-items: center;
         gap: 8px;
         margin-bottom: 8px;
+      }
+
+      .context-size {
+        margin-left: auto;
+        font-size: 0.85em;
+        color: var(--vscode-descriptionForeground);
+        white-space: nowrap;
+      }
+
+      .context-size.near-cap {
+        color: var(--vscode-errorForeground);
       }
 
       .session-controls {
@@ -739,6 +765,7 @@ function renderState(state: StepPanelState): string {
           </select>
           <button type="submit" ${state.running ? "disabled" : ""}>Send</button>
           <button type="button" class="secondary" id="stop" ${state.running ? "" : "disabled"}>Stop</button>
+          ${contextSize}
         </div>
         <div class="input-wrap">
           <textarea id="prompt" placeholder="Describe the task. Type @ to mention a file." ${state.running ? "disabled" : ""}>${escapeHtml(state.activePrompt ?? "")}</textarea>
@@ -754,7 +781,9 @@ function renderState(state: StepPanelState): string {
       const sessionSelect = document.getElementById("session");
       const newSession = document.getElementById("new-session");
       const deleteSession = document.getElementById("delete-session");
+      const SLASH_COMMANDS = [{ name: "/compact", description: "Summarize older messages to shrink context" }];
       let activeMention = undefined;
+      let activeSlash = undefined;
       scrollContentToLatest();
 
       document.querySelectorAll("[data-approval]").forEach((button) => {
@@ -773,6 +802,16 @@ function renderState(state: StepPanelState): string {
         event.preventDefault();
         const value = prompt.value.trim();
         if (value.length === 0) {
+          return;
+        }
+        if (SLASH_COMMANDS.some((command) => command.name === value)) {
+          if (value === "/compact") {
+            vscode.postMessage({ type: "compactContext" });
+          }
+          prompt.value = "";
+          activeSlash = undefined;
+          suggestions.hidden = true;
+          suggestions.replaceChildren();
           return;
         }
         vscode.postMessage({
@@ -819,6 +858,12 @@ function renderState(state: StepPanelState): string {
       });
 
       prompt.addEventListener("input", () => {
+        activeSlash = findActiveSlash(prompt.value);
+        if (activeSlash !== undefined) {
+          activeMention = undefined;
+          renderSlashSuggestions(activeSlash.query);
+          return;
+        }
         activeMention = findActiveMention(prompt.value, prompt.selectionStart);
         if (activeMention === undefined) {
           suggestions.hidden = true;
@@ -992,6 +1037,11 @@ function renderState(state: StepPanelState): string {
           modelEl.outerHTML = sections.model;
         }
 
+        const contextSizeEl = document.querySelector(".context-size");
+        if (contextSizeEl !== null && sections.contextSize) {
+          contextSizeEl.outerHTML = sections.contextSize;
+        }
+
         const sessionEl = document.querySelector(".session-controls");
         if (sessionEl !== null && sections.sessions) {
           sessionEl.outerHTML = sections.sessions;
@@ -1062,6 +1112,39 @@ function renderState(state: StepPanelState): string {
           suggestions.append(button);
         }
         suggestions.hidden = false;
+      }
+
+      function renderSlashSuggestions(query) {
+        suggestions.replaceChildren();
+        const matches = SLASH_COMMANDS.filter((command) => command.name.startsWith("/" + query));
+        if (matches.length === 0) {
+          suggestions.hidden = true;
+          return;
+        }
+        for (const command of matches) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "suggestion";
+          button.textContent = command.name + " — " + command.description;
+          button.addEventListener("click", () => {
+            prompt.value = command.name;
+            activeSlash = undefined;
+            prompt.focus();
+            prompt.setSelectionRange(command.name.length, command.name.length);
+            suggestions.hidden = true;
+            suggestions.replaceChildren();
+          });
+          suggestions.append(button);
+        }
+        suggestions.hidden = false;
+      }
+
+      function findActiveSlash(value) {
+        const match = value.match(/^\\/(\\S*)$/);
+        if (match === null) {
+          return undefined;
+        }
+        return { query: match[1] ?? "" };
       }
 
       function findActiveMention(value, cursor) {
@@ -1264,6 +1347,16 @@ function renderStream(stream: PlanStreamState | undefined): string {
       <pre id="stream-raw">${escapeHtml(raw)}</pre>
     </details>
   </section>`;
+}
+
+function renderContextSize(contextSize: StepPanelState["contextSize"]): string {
+  if (contextSize === undefined) {
+    return `<span class="context-size"></span>`;
+  }
+  const cap = contextSize.hardTokenCap;
+  const capSuffix = cap === undefined ? "" : ` / ${cap}`;
+  const near = cap !== undefined && contextSize.approxTokens >= cap * 0.9 ? " near-cap" : "";
+  return `<span class="context-size${near}">Context: ~${contextSize.approxTokens} tokens${escapeHtml(capSuffix)}</span>`;
 }
 
 function renderTokenBudget(tokenBudget: TokenBudgetState | undefined): string {

@@ -580,7 +580,7 @@ export function activate(context: vscode.ExtensionContext): void {
         baseUrl: stripProviderVersionSuffix(selectedProvider, nextUrl ?? currentUrl),
         getApiKey: () => providerSecrets?.getProviderSecret(providerSecretKey(selectedProvider)) ?? Promise.resolve(undefined)
       });
-      const modelId = await selectModelId(modelAdapter, provider.label, config.get<string>("modelId", "qwen2.5-coder"));
+      const modelId = await selectModelId(modelAdapter, provider.label, config.get<string>("modelId", "qwen/qwen3-coder-30b"));
       if (modelId === undefined) {
         return;
       }
@@ -627,7 +627,7 @@ function getConfiguredProviderAndBaseUrl(): { provider: ProviderId; baseUrl: str
 
 function getConfiguredModelId(): string {
   const modelConfig = vscode.workspace.getConfiguration("buildr.model");
-  return modelConfig.get<string>("modelId", "qwen2.5-coder");
+  return modelConfig.get<string>("modelId", "qwen/qwen3-coder-30b");
 }
 
 function parseProvider(value: string): ProviderId {

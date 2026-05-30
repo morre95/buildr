@@ -124,7 +124,7 @@
         },
         "buildr.model.modelId": {
           "type": "string",
-          "default": "qwen2.5-coder",
+          "default": "qwen/qwen3-coder-30b",
           "description": "Default model id sent to the configured provider."
         },
         "buildr.context.tokenBudget": {

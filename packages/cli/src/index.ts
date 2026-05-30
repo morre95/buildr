@@ -324,8 +324,8 @@ function indexPath(root: string): string {
 function printUsage(): void {
   process.stderr.write([
     "Usage:",
-    "  buildr plan [--model qwen2.5-coder] [--provider ollama] [--base-url http://127.0.0.1:11434] \"task description\"",
-    "  buildr run [--model qwen2.5-coder] [--hard-token-cap 32000] [--max-parallel-sub-agents 3] \"task description\"",
+    "  buildr plan [--model qwen/qwen3-coder-30b] [--provider ollama] [--base-url http://127.0.0.1:11434] \"task description\"",
+    "  buildr run [--model qwen/qwen3-coder-30b] [--hard-token-cap 32000] [--max-parallel-sub-agents 3] \"task description\"",
     "  buildr context \"query\"",
     "  buildr index",
     "  buildr mcp list",

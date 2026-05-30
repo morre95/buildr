@@ -269,7 +269,7 @@ function createConfiguredCore(): BuildrCore {
 }
 
 function getConfiguredModelId(): string {
-  return vscode.workspace.getConfiguration("buildr.model").get<string>("modelId", "qwen2.5-coder");
+  return vscode.workspace.getConfiguration("buildr.model").get<string>("modelId", "qwen/qwen3-coder-30b");
 }
 
 function parseProvider(value: string): ProviderId {

@@ -30,7 +30,7 @@ describe("OllamaAdapter", () => {
     )));
     const adapter = new OllamaAdapter();
 
-    expect(await adapter.getContextWindow("qwen2.5-coder")).toBe(32768);
+    expect(await adapter.getContextWindow("qwen/qwen3-coder-30b")).toBe(32768);
   });
 
   it("returns undefined when /api/show has no context length", async () => {

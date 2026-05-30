@@ -255,7 +255,7 @@ export class ToolCallingSession {
     const skipped = plans.filter((plan) => plan.decision !== "allow");
 
     for (const plan of skipped) {
-      const result = deniedToolResult(plan.call, plan.decision);
+      const result = deniedToolResult(plan.call, plan.entry.definition);
       results.set(plan.call.id, result);
       this.toolExecutions.push({ call: plan.call, decision: plan.decision, ranInParallel: false, result });
       this.options.onEvent?.({ type: "tool_skipped", call: plan.call, decision: plan.decision });
@@ -358,10 +358,10 @@ function unknownToolResult(call: ToolCall): ToolResult {
   };
 }
 
-function deniedToolResult(call: ToolCall, decision: PermissionDecision): ToolResult {
-  const reason = decision === "ask"
-    ? "requires approval that was not granted"
-    : "was denied by the active permission policy";
+function deniedToolResult(call: ToolCall, definition: ToolDefinition): ToolResult {
+  const reason = definition.permission === "always_deny"
+    ? "was denied by the active permission policy"
+    : "requires approval that was not granted";
   return {
     ok: false,
     summary: `Tool "${call.name}" ${reason}.`,

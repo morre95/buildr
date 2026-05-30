@@ -100,6 +100,10 @@ let currentPlanMentionedFiles: string[] = [];
 let finalSummaryState: string | undefined;
 let contextWindowTokens: number | undefined;
 let contextWindowKey: string | undefined;
+// Estimated size of the most recent prompt actually sent to the model by the
+// agent pipeline. The chat transcript (`messages`) does not include agent
+// prompts, so without this the indicator under-reports during agent runs.
+let lastAgentContextTokens: number | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let providerSecrets: BuildrSecretStore | undefined;
 let activeSessionId = "";
@@ -1787,12 +1791,12 @@ async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: stri
   renderCurrentState(stepPanel);
 
   try {
-    const architect = await invokeJsonAgent("architect", createArchitectMessages({
+    const architect = await invokeStreamingJsonAgent("architect", "Architect: planning", createArchitectMessages({
       requestId: createAgentRequestId("architect"),
       rawTask: appendMentionHint(rawTask, resolvedMentions),
       workspaceTree,
       workspaceSummary: context.text
-    }), validateArchitectOutput);
+    }), validateArchitectOutput, stepPanel);
     agentPipelineState.plan = architect.data.plan;
     agentPipelineState.warnings.push(...architect.warnings);
     currentPlan = convertAgentPlanToBuildrPlan(rawTask, architect.data.plan);
@@ -1894,9 +1898,22 @@ async function runCoderReviewLoop(
   }
   let feedback: string | undefined;
   let lastFailure: string | undefined;
+  // Consecutive attempts that failed with the same message after the retry cap
+  // was bypassed. A deterministic failure (e.g. an unimplementable task) repeats
+  // identically forever, so we stop instead of looping until the user kills it.
+  let noProgressStreak = 0;
   const maxAttempts = getCoderRetryLimit();
   let retryLimitBypassed = false;
+  const recordFailure = (summary: string): void => {
+    noProgressStreak = summary === lastFailure ? noProgressStreak + 1 : 0;
+    lastFailure = summary;
+  };
   for (let attempt = 1; ; attempt += 1) {
+    if (retryLimitBypassed && noProgressStreak >= NO_PROGRESS_STOP_THRESHOLD) {
+      blockAgentPipelineOnNoProgress(task, attempt - 1, lastFailure);
+      renderCurrentState(stepPanel);
+      return undefined;
+    }
     if (!retryLimitBypassed && attempt > maxAttempts) {
       const shouldContinue = await promptToContinueAfterRetryLimit(task, maxAttempts, lastFailure, stepPanel);
       if (!shouldContinue) {
@@ -1905,6 +1922,10 @@ async function runCoderReviewLoop(
         return undefined;
       }
       retryLimitBypassed = true;
+      // The user explicitly chose to continue; judge the next attempts fresh so
+      // failures accumulated before the cap do not immediately re-trip the stop.
+      noProgressStreak = 0;
+      lastFailure = undefined;
       events.push({
         id: `agent:coder:${task.id}:${Date.now()}:retry-continued`,
         title: `Continue ${task.title}`,
@@ -1919,33 +1940,16 @@ async function runCoderReviewLoop(
     const files = await createFileSnapshots(task.targetFiles);
     let coder: AgentJsonEnvelope<CoderOutput>;
 
-    const streamLabel = `Coder: ${task.title} (attempt ${attempt})`;
-    agentPipelineState.activeStream = { role: "coder", label: streamLabel, raw: "", active: true };
-    stepPanel.postAgentStreamStart("coder", streamLabel);
-    renderCurrentState(stepPanel);
-
-    const coderDelta = (content: string) => {
-      if (agentPipelineState?.activeStream !== undefined) {
-        agentPipelineState.activeStream.raw += content;
-      }
-      stepPanel.postAgentStreamDelta(content);
-    };
-
     try {
-      coder = await invokeJsonAgent("coder", createCoderMessages({
+      coder = await invokeStreamingJsonAgent("coder", `Coder: ${task.title} (attempt ${attempt})`, createCoderMessages({
         requestId: createAgentRequestId("coder"),
         input: {
           task,
           files,
           ...(feedback === undefined ? {} : { feedback })
         }
-      }), validateCoderOutput, coderDelta);
+      }), validateCoderOutput, stepPanel);
     } catch (error) {
-      if (agentPipelineState.activeStream !== undefined) {
-        agentPipelineState.activeStream.active = false;
-      }
-      stepPanel.postAgentStreamComplete();
-
       const summary = error instanceof Error ? error.message : String(error);
       events.push({
         id: `agent:coder:${task.id}:${attempt}:invalid-json`,
@@ -1955,7 +1959,7 @@ async function runCoderReviewLoop(
         summary: `Coder returned invalid JSON: ${summary}`,
         warnings: [summary]
       });
-      lastFailure = summary;
+      recordFailure(summary);
       feedback = [
         "Your previous response was not valid JSON, so Buildr could not validate or apply it.",
         summary,
@@ -1966,10 +1970,6 @@ async function runCoderReviewLoop(
       continue;
     }
 
-    if (agentPipelineState.activeStream !== undefined) {
-      agentPipelineState.activeStream.active = false;
-    }
-    stepPanel.postAgentStreamComplete();
     let patches: TextPatch[];
     try {
       patches = await createValidatedPatches(coder.data, files);
@@ -1983,7 +1983,7 @@ async function runCoderReviewLoop(
         summary: `Coder returned invalid diffs: ${summary}`,
         warnings: coder.warnings
       });
-      lastFailure = summary;
+      recordFailure(summary);
       feedback = [
         "Your previous diffs failed deterministic patch validation.",
         summary,
@@ -2024,12 +2024,11 @@ async function runCoderReviewLoop(
     }
 
     agentPipelineState.phase = "reviewing";
-    agentPipelineState.activeStream = undefined;
-    const reviewer = await invokeJsonAgent("reviewer", createReviewerMessages({
+    const reviewer = await invokeStreamingJsonAgent("reviewer", `Reviewer: ${task.title} (attempt ${attempt})`, createReviewerMessages({
       requestId: createAgentRequestId("reviewer"),
       task,
       coderOutput: coder.data
-    }), validateReviewerOutput);
+    }), validateReviewerOutput, stepPanel);
     const issues = reviewer.data.status === "changes_needed" ? reviewer.data.issues : [];
     agentPipelineState.reviewResults.push({
       taskId: task.id,
@@ -2048,7 +2047,7 @@ async function runCoderReviewLoop(
       return coderResult;
     }
     feedback = issues.join("\n");
-    lastFailure = feedback;
+    recordFailure(feedback);
   }
 
 }
@@ -2096,6 +2095,32 @@ function createAgentRetryApproval(task: AgentPlanTask, maxAttempts: number, last
       ...(lastFailure === undefined ? {} : { lastFailure })
     }
   };
+}
+
+// After the user bypasses the retry cap, stop once this many consecutive
+// attempts fail with the identical message — that means the loop is stuck, not
+// progressing, and would otherwise run until the user manually aborts it.
+const NO_PROGRESS_STOP_THRESHOLD = 2;
+
+function blockAgentPipelineOnNoProgress(task: AgentPlanTask, attempts: number, lastFailure: string | undefined): void {
+  const summary = [
+    `Agent workflow stopped: ${task.title} made no progress across repeated attempts (${attempts} total) and kept failing identically.`,
+    lastFailure === undefined ? "" : `Repeated failure: ${lastFailure}`
+  ].filter((part) => part.length > 0).join("\n");
+  if (agentPipelineState !== undefined) {
+    agentPipelineState.phase = "blocked";
+    agentPipelineState.finalSummary = summary;
+    agentPipelineState.warnings.push(summary);
+  }
+  events.push({
+    id: `agent:coder:${task.id}:${Date.now()}:no-progress-stopped`,
+    title: `Stopped ${task.title}`,
+    status: "blocked",
+    tool: "agent_orchestrator",
+    summary,
+    warnings: []
+  });
+  messages.push({ role: "assistant", text: summary });
 }
 
 function blockAgentPipelineOnRetryLimit(task: AgentPlanTask, maxAttempts: number, lastFailure: string | undefined): void {
@@ -2334,10 +2359,10 @@ async function queueAgentTestGeneration(stepPanel: StepPanel): Promise<void> {
     return;
   }
   agentPipelineState.phase = "testing";
-  const tester = await invokeJsonAgent("tester", createTesterMessages({
+  const tester = await invokeStreamingJsonAgent("tester", "Tester: generating test cases", createTesterMessages({
     requestId: createAgentRequestId("tester"),
     plan: agentPipelineState.plan
-  }), validateTesterOutput);
+  }), validateTesterOutput, stepPanel);
   agentPipelineState.testCases = tester.data.testCases;
   agentPipelineState.warnings.push(...tester.warnings);
   events.push({
@@ -2367,11 +2392,11 @@ async function inspectAgentTestResults(stepPanel: StepPanel): Promise<void> {
   if (agentPipelineState?.plan === undefined) {
     return;
   }
-  const tester = await invokeJsonAgent("tester", createTesterMessages({
+  const tester = await invokeStreamingJsonAgent("tester", "Tester: inspecting results", createTesterMessages({
     requestId: createAgentRequestId("tester"),
     plan: agentPipelineState.plan,
     observations: agentPipelineState.testObservations
-  }), validateTesterOutput);
+  }), validateTesterOutput, stepPanel);
   const status = tester.data.result?.status ?? (agentPipelineState.testObservations.every((observation) => observation.exitCode === 0) ? "passed" : "failed");
   const failures = tester.data.result?.failures ?? [];
   events.push({
@@ -2384,6 +2409,36 @@ async function inspectAgentTestResults(stepPanel: StepPanel): Promise<void> {
   });
   completeAgentPipeline(status === "passed" ? "Agent workflow completed." : "Agent workflow completed with failing tests.");
   renderCurrentState(stepPanel, createFinalReportSummary());
+}
+
+// Wraps invokeJsonAgent with the live raw-output stream lifecycle so every agent
+// role (architect, coder, reviewer, tester) shows its tokens in the step panel.
+async function invokeStreamingJsonAgent<TData>(
+  role: AgentRole,
+  label: string,
+  messagesForModel: CoreChatMessage[],
+  validateData: (value: unknown) => TData,
+  stepPanel: StepPanel
+): Promise<AgentJsonEnvelope<TData>> {
+  if (agentPipelineState !== undefined) {
+    agentPipelineState.activeStream = { role, label, raw: "", active: true };
+  }
+  stepPanel.postAgentStreamStart(role, label);
+  renderCurrentState(stepPanel);
+  const onDelta = (content: string): void => {
+    if (agentPipelineState?.activeStream !== undefined) {
+      agentPipelineState.activeStream.raw += content;
+    }
+    stepPanel.postAgentStreamDelta(content);
+  };
+  try {
+    return await invokeJsonAgent(role, messagesForModel, validateData, onDelta);
+  } finally {
+    if (agentPipelineState?.activeStream !== undefined) {
+      agentPipelineState.activeStream.active = false;
+    }
+    stepPanel.postAgentStreamComplete();
+  }
 }
 
 async function invokeJsonAgent<TData>(
@@ -2443,6 +2498,7 @@ async function invokeAgentModel(
 ): Promise<string> {
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
+  lastAgentContextTokens = estimateCoreContextTokens(messagesForModel);
   let rawResponse = "";
   for await (const delta of configuredCore.model.chat({
     model: modelId,
@@ -2494,11 +2550,11 @@ function createAgentRepairMessages(options: {
 function agentDataSchemaDescription(role: AgentRole): string {
   switch (role) {
     case "architect":
-      return "{ plan: { summary: string, tasks: [{ id: string, title: string, instructions: string, targetFiles: string[], dependsOn: string[], acceptanceCriteria: string[] }] } }";
+      return "{ plan: { summary: string, tasks: [{ id: string, title: string, instructions: string, targetFiles: string[], dependsOn: string[], acceptanceCriteria: string[] }] } }. targetFiles must be concrete workspace-relative paths (e.g. src/snake.js), never descriptions.";
     case "coder":
       return "{ summary: string, diffs: [{ path: string, beforeHash: string, hunks: [{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }] }] }. Hunk lines must start with space, +, or -. For new files use oldStart 0 and oldLines 0.";
     case "reviewer":
-      return "{ status: 'approved' } or { status: 'changes_needed', issues: string[] }";
+      return "{ status: 'approved' } or { status: 'changes_needed', issues: [{ category: 'correctness' | 'style' | 'tests', message: string }] }";
     case "tester":
       return "{ testCases: [{ id: string, title: string, command: string }], result?: { status: 'passed' | 'failed', failures: string[] } }";
   }
@@ -2576,11 +2632,12 @@ async function createFileSnapshots(paths: string[]): Promise<AgentFileSnapshot[]
     if (!isWorkspaceRelativePath(root, absolute)) {
       throw new Error(`Architect assigned an out-of-workspace path ${path}.`);
     }
-    const content = await readTextFileIfExists(absolute);
+    const { content, exists } = await readFileIfPresent(absolute);
     return {
       path,
       content,
-      hash: hashText(content)
+      hash: hashText(content),
+      exists
     };
   }));
 }
@@ -3148,6 +3205,14 @@ async function readTextFileIfExists(path: string): Promise<string> {
   }
 }
 
+async function readFileIfPresent(path: string): Promise<{ content: string; exists: boolean }> {
+  try {
+    return { content: await readFile(path, "utf8"), exists: true };
+  } catch {
+    return { content: "", exists: false };
+  }
+}
+
 async function applyApprovedPatch(patch: TextPatch): Promise<void> {
   const current = await readTextFileIfExists(patch.path);
   const next = applyTextPatch(current, patch);
@@ -3306,8 +3371,17 @@ function estimateContextTokens(msgs: ChatMessage[]): number {
   return Math.ceil(totalChars / 4);
 }
 
+function estimateCoreContextTokens(msgs: CoreChatMessage[]): number {
+  const totalChars = msgs.reduce((sum, message) => sum + message.content.length, 0);
+  return Math.ceil(totalChars / 4);
+}
+
 function getContextSize(): { approxTokens: number; contextWindow?: number } {
-  const approxTokens = estimateContextTokens(messages);
+  // During an agent run the real context is the last agent prompt, not the chat
+  // transcript; fall back to the transcript for plain chat interactions.
+  const approxTokens = agentPipelineState !== undefined && lastAgentContextTokens !== undefined
+    ? lastAgentContextTokens
+    : estimateContextTokens(messages);
   return contextWindowTokens === undefined ? { approxTokens } : { approxTokens, contextWindow: contextWindowTokens };
 }
 

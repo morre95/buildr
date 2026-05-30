@@ -8,6 +8,7 @@ import {
   hashText,
   parseAgentEnvelope,
   resolveCoderRetryLimit,
+  validateArchitectOutput,
   validateCoderOutput,
   validateReviewerOutput,
   type AgentFileDiff
@@ -30,6 +31,60 @@ describe("deterministic agent contracts", () => {
     );
 
     expect(parsed.data).toEqual({ status: "changes_needed", issues: ["Add a test."] });
+  });
+
+  it("normalizes reviewer issues given as categorized objects", () => {
+    const result = validateReviewerOutput({
+      status: "changes_needed",
+      issues: [
+        { category: "correctness", message: "No diff was provided." },
+        { type: "tests", message: "Add a verification step." },
+        { description: "Keep changes scoped." }
+      ]
+    });
+
+    expect(result).toEqual({
+      status: "changes_needed",
+      issues: [
+        "correctness: No diff was provided.",
+        "tests: Add a verification step.",
+        "Keep changes scoped."
+      ]
+    });
+  });
+
+  it("rejects architect target files that are descriptions instead of paths", () => {
+    expect(() => validateArchitectOutput({
+      plan: {
+        summary: "Add Snake.",
+        tasks: [{
+          id: "snake",
+          title: "Implement Snake",
+          instructions: "Build the game.",
+          targetFiles: ["game entrypoint file(s) chosen from workspace inspection"],
+          dependsOn: [],
+          acceptanceCriteria: ["Game runs."]
+        }]
+      }
+    })).toThrow(/workspace-relative file path/u);
+  });
+
+  it("accepts architect target files for not-yet-existing concrete paths", () => {
+    const result = validateArchitectOutput({
+      plan: {
+        summary: "Add Snake.",
+        tasks: [{
+          id: "snake",
+          title: "Implement Snake",
+          instructions: "Build the game.",
+          targetFiles: ["src/snake.js", "index.html"],
+          dependsOn: [],
+          acceptanceCriteria: ["Game runs."]
+        }]
+      }
+    });
+
+    expect(result.plan.tasks[0]?.targetFiles).toEqual(["src/snake.js", "index.html"]);
   });
 
   it("rejects envelopes with the wrong request id", () => {

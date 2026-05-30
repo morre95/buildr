@@ -35,6 +35,8 @@ export interface AgentFileSnapshot {
   path: string;
   content: string;
   hash: string;
+  /** False when the file does not exist yet and must be created by the coder. */
+  exists?: boolean;
 }
 
 export interface CoderInput {
@@ -174,8 +176,7 @@ export function validateReviewerOutput(value: unknown): ReviewerOutput {
     return { status: "approved" };
   }
   if (value.status === "changes_needed") {
-    assertStringArray(value.issues, "issues");
-    return { status: "changes_needed", issues: value.issues };
+    return { status: "changes_needed", issues: normalizeReviewerIssues(value.issues) };
   }
   throw new Error("Reviewer status must be approved or changes_needed.");
 }
@@ -199,7 +200,9 @@ export function createArchitectMessages(options: {
     "Create an ordered implementation plan for this workspace.",
     "Do not decide routing. The orchestrator owns every next step.",
     "Return data.plan as { summary, tasks }.",
-    "Each task must contain id, title, instructions, targetFiles, dependsOn, acceptanceCriteria."
+    "Each task must contain id, title, instructions, targetFiles, dependsOn, acceptanceCriteria.",
+    "targetFiles must be concrete workspace-relative file paths (e.g. src/snake.js, index.html), never descriptions or placeholders.",
+    "If the workspace is empty or the file does not exist yet, still provide the exact path you want created."
   ], {
     rawTask: options.rawTask,
     workspaceTree: options.workspaceTree,
@@ -215,6 +218,7 @@ export function createCoderMessages(options: {
     "Implement exactly the assigned task.",
     "Return structured diffs only, never full files.",
     "Use workspace-relative paths and the provided beforeHash for every file diff.",
+    "Each entry in files includes an exists flag. When exists is false the file does not exist yet: create it with a new-file diff using the provided beforeHash (the hash of empty content). Never refuse because a file is new or empty.",
     "Coder data must be an object with shape: { summary: string, diffs: [{ path: string, beforeHash: string, hunks: [{ oldStart: number, oldLines: number, newStart: number, newLines: number, lines: string[] }] }] }.",
     "Every value must be valid JSON. Do not use JavaScript expressions or string concatenation inside JSON.",
     "Every hunk line must be a single valid JSON string. Escape quotes and backslashes inside code lines.",
@@ -231,7 +235,8 @@ export function createReviewerMessages(options: {
 }): ChatMessage[] {
   return createAgentMessages("reviewer", options.requestId, [
     "Review the coder diff against the original task and fixed rubric.",
-    "Return only { status: 'approved' } or { status: 'changes_needed', issues }.",
+    "Return only { status: 'approved' } or { status: 'changes_needed', issues: [{ category, message }] }.",
+    "Each issue is an object whose category is one of correctness, style, or tests, and whose message is a single string.",
     "Do not decide routing, retries, testing, approval, or completion.",
     "",
     "Rubric:",
@@ -367,7 +372,7 @@ function validateAgentPlanTask(value: unknown, index: number): AgentPlanTask {
   assertString(value.id, `tasks[${index}].id`);
   assertString(value.title, `tasks[${index}].title`);
   assertString(value.instructions, `tasks[${index}].instructions`);
-  assertStringArray(value.targetFiles, `tasks[${index}].targetFiles`);
+  assertWorkspacePathArray(value.targetFiles, `tasks[${index}].targetFiles`);
   assertStringArray(value.dependsOn, `tasks[${index}].dependsOn`);
   assertStringArray(value.acceptanceCriteria, `tasks[${index}].acceptanceCriteria`);
   return {
@@ -592,6 +597,74 @@ function assertStringArray(value: unknown, field: string): asserts value is stri
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`${field} must be an array of strings.`);
   }
+}
+
+// Reviewer models follow the categorized rubric and naturally emit issues as
+// objects ({ category, message }). Accept both plain strings and those objects,
+// normalizing every issue to a single string so downstream rendering is uniform.
+function normalizeReviewerIssues(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("issues must be a non-empty array.");
+  }
+  return value.map((item, index) => normalizeReviewerIssue(item, index));
+}
+
+function normalizeReviewerIssue(value: unknown, index: number): string {
+  if (typeof value === "string") {
+    if (value.trim().length === 0) {
+      throw new Error(`issues[${index}] must be a non-empty string.`);
+    }
+    return value.trim();
+  }
+  if (isRecord(value)) {
+    const detail = firstNonEmptyString(value.message, value.issue, value.description, value.text);
+    if (detail === undefined) {
+      throw new Error(`issues[${index}] must include a message, issue, or description string.`);
+    }
+    const category = firstNonEmptyString(value.category, value.type);
+    return category === undefined ? detail : `${category}: ${detail}`;
+  }
+  throw new Error(`issues[${index}] must be a string or an object with a message.`);
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+// Rejects "paths" that are actually descriptions (e.g. "game entrypoint file"),
+// absolute paths, or traversal. New files that do not exist yet are still valid
+// — the snapshot's exists flag signals that to the coder.
+function assertWorkspacePathArray(value: unknown, field: string): asserts value is string[] {
+  assertStringArray(value, field);
+  value.forEach((path, index) => {
+    if (!isPlausibleWorkspacePath(path)) {
+      throw new Error(
+        `${field}[${index}] must be a concrete workspace-relative file path, not a description: "${path}".`
+      );
+    }
+  });
+}
+
+function isPlausibleWorkspacePath(path: string): boolean {
+  const trimmed = path.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  if (/\s/u.test(trimmed)) {
+    return false; // descriptions contain whitespace; real paths do not
+  }
+  if (/^(?:[/\\]|[A-Za-z]:[/\\])/u.test(trimmed)) {
+    return false; // absolute paths are out of workspace scope
+  }
+  if (trimmed.split(/[/\\]/u).includes("..")) {
+    return false; // parent traversal
+  }
+  return true;
 }
 
 function assertNumber(value: unknown, field: string): asserts value is number {

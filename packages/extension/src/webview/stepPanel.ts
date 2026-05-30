@@ -777,7 +777,7 @@ function renderState(state: StepPanelState): string {
       const sessionSelect = document.getElementById("session");
       const newSession = document.getElementById("new-session");
       const deleteSession = document.getElementById("delete-session");
-      const SLASH_COMMANDS = [{ name: "/compact", description: "Summarize older messages to shrink context" }];
+      const SLASH_COMMANDS = [{ name: "/compact", description: "Summarize earlier conversation passed to multi-step agent runs" }];
       let activeMention = undefined;
       let activeSlash = undefined;
       scrollContentToLatest();
@@ -1352,14 +1352,13 @@ function renderContextSize(contextSize: StepPanelState["contextSize"]): string {
   const window = contextSize.contextWindow;
   const used = formatTokenCount(contextSize.approxTokens);
   if (window === undefined || window <= 0) {
-    return `<span class="context-size">Context: ${used} tokens</span>`;
+    return `<span class="context-size">This request: ${used} tokens</span>`;
   }
   const percent = Math.round((contextSize.approxTokens / window) * 100);
-  // Surface the percentage as the primary signal and nudge toward /compact as
-  // the window fills, so the user knows when to shrink the context.
-  const near = percent >= 70;
-  const hint = near ? " · /compact to shrink" : "";
-  return `<span class="context-size${percent >= 90 ? " near-cap" : ""}">Context: ${percent}% of ${formatTokenCount(window)} (${used} tokens)${hint}</span>`;
+  // This is the size of the single request being sent, not an accumulating
+  // conversation. Each request is built fresh, so it does not grow turn over
+  // turn and /compact does not shrink it — label it honestly as per-request.
+  return `<span class="context-size${percent >= 90 ? " near-cap" : ""}">This request: ${percent}% of ${formatTokenCount(window)} window (${used} tokens)</span>`;
 }
 
 function formatTokenCount(tokens: number): string {

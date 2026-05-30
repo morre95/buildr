@@ -894,7 +894,15 @@ function compactConversationContext(stepPanel: StepPanel): void {
   });
 
   messages = [
-    { role: "assistant", text: `Compacted ${older.length} earlier message(s):\n${compacted.text}` },
+    {
+      role: "assistant",
+      text: [
+        `Compacted ${older.length} earlier message(s). This only shrinks the conversation transcript passed to multi-step agent runs.`,
+        "The per-request context shown in the indicator is built fresh on each call and is not affected.",
+        "",
+        compacted.text
+      ].join("\n")
+    },
     ...recent
   ];
   renderCurrentState(stepPanel);

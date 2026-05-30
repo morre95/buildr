@@ -1707,16 +1707,16 @@ function renderExecutionSection(state: StepPanelState): string {
   return `<section><h2>Execution</h2><ol>${events}${activeStreamStep}</ol></section>`;
 }
 
-// A finished execution step: collapsed by default so the list stays scannable.
-// The heading (title/summary/status) is always visible; the evidence is the
-// foldable body. Steps with no evidence render as a plain line — nothing to fold.
+// A finished execution step: expanded by default so its evidence is visible,
+// but still collapsible. The heading (title/summary/status) is the summary; the
+// evidence is the body. Steps with no evidence render as a plain line.
 function renderExecutionEvent(event: ExecutionEvent): string {
   const heading = `<strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>`;
   const evidence = renderEvidence(event);
   if (evidence.length === 0) {
     return `<li>${heading}</li>`;
   }
-  return `<li><details class="execution-event"><summary>${heading}</summary>${evidence}</details></li>`;
+  return `<li><details class="execution-event" open><summary>${heading}</summary>${evidence}</details></li>`;
 }
 
 // The currently-streaming agent step: shown as the last item in the Execution

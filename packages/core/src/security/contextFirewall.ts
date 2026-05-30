@@ -23,7 +23,9 @@ const DEFAULT_NEVER_SEND_PATTERNS = [
   "id_rsa",
   "id_ed25519",
   "credentials.json",
-  "secrets/"
+  "secrets/",
+  // Editor/Buildr configuration, not project context worth sending to the LLM.
+  ".vscode/"
 ];
 
 const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [

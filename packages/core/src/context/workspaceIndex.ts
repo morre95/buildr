@@ -16,7 +16,7 @@ export interface WorkspaceIndex {
   generatedAt: string;
 }
 
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", "out", "coverage", ".corepack", ".pnpm-store"]);
+const SKIP_DIRS = new Set([".git", ".vscode", "node_modules", "dist", "out", "coverage", ".corepack", ".pnpm-store"]);
 const TEXT_EXTENSIONS = new Set([
   ".c", ".cfg", ".cjs", ".clj", ".cpp", ".cs", ".css", ".dart", ".erl", ".ex",
   ".go", ".h", ".hpp", ".html", ".ini", ".java", ".js", ".json", ".jsx", ".jl",

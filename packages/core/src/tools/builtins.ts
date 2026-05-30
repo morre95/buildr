@@ -114,7 +114,7 @@ export async function applyPatchTool(patch: TextPatch): Promise<ToolResult<TextP
   };
 }
 
-const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "out", "coverage", ".corepack", ".pnpm-store"]);
+const SKIP_DIRS = new Set(["node_modules", ".git", ".vscode", "dist", "out", "coverage", ".corepack", ".pnpm-store"]);
 
 async function walkTextFiles(root: string, visit: (path: string) => Promise<void>): Promise<void> {
   const entries = await readdir(root, { withFileTypes: true });

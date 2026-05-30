@@ -11,6 +11,9 @@ describe("Phase 1B hardening", () => {
     const firewall = new ContextFirewall();
 
     expect(firewall.inspectPath("/repo/.env").allowed).toBe(false);
+    // .vscode holds editor/Buildr settings, not project context for the LLM.
+    expect(firewall.inspectPath("/repo/.vscode/settings.json").allowed).toBe(false);
+    expect(firewall.inspectPath("/repo/src/app.ts").allowed).toBe(true);
 
     const decision = firewall.inspectText('api_key = "supersecretvalue"');
     expect(decision.redactedText).toBe("[REDACTED_SECRET]");

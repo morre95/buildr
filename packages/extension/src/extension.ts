@@ -2588,7 +2588,7 @@ async function createWorkspaceTree(): Promise<string[]> {
   }
   const files = await vscode.workspace.findFiles(
     new vscode.RelativePattern(root, "**/*"),
-    "{**/.git/**,**/node_modules/**,**/dist/**,**/out/**,**/coverage/**,**/.pnpm-store/**}",
+    "{**/.git/**,**/.vscode/**,**/node_modules/**,**/dist/**,**/out/**,**/coverage/**,**/.pnpm-store/**}",
     500
   );
   return files.map((uri) => normalizeWorkspacePath(relative(root.uri.fsPath, uri.fsPath))).sort();

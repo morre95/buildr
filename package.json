@@ -1,6 +1,6 @@
 {
   "name": "buildr",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "description": "Local-model-first VS Code agent for transparent coding workflows.",
   "type": "module",

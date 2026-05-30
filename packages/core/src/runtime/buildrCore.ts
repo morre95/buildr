@@ -213,6 +213,9 @@ function createPlanMessages(goal: string, contextSummary: string | undefined): C
         "verification must contain required, levels, commands, allowUnverifiedCompletion, includeOutputEvidence.",
         "Each step must contain id, title, kind, tools, targets, dependsOn, risk.",
         "Allowed step kind values: read, write, verify. Allowed risk values: low, medium, high.",
+        "Every write step's targets must be concrete workspace-relative file paths such as index.html, src/snake.js, or src/style.css.",
+        "Never use descriptions, globs, directories, or placeholders like 'the app entry files' as a write target — only real file paths the coder can create or edit.",
+        "If the project does not exist yet, decide the specific files to create and name them directly in the write step's targets. Do not defer file selection to a later step.",
         "Keep write targets scoped and include a verify step when code changes are needed."
       ].join("\n")
     },

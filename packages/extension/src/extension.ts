@@ -46,6 +46,7 @@ import {
   type ModelAdapter,
   type ModelInfo,
   type PendingApproval,
+  type PlanStep,
   type ProviderId,
   type TextPatch,
   type TestRunObservation,
@@ -1842,13 +1843,12 @@ async function runDeterministicAgentWorkflowFromCurrentPlan(stepPanel: StepPanel
   tokenBudgetState = undefined;
 
   const context = await createWorkspaceContextSummary(currentPlan.goal, currentPlanMentionedFiles);
-  const plan = convertBuildrPlanToAgentPlan(currentPlan);
   agentPipelineState = {
     phase: "coding",
     rawTask: currentPlan.goal,
     workspaceTree: await createWorkspaceTree(),
     verificationMode: "llm",
-    plan,
+    plan: { summary: currentPlan.goal, tasks: [] },
     currentTaskIndex: 0,
     coderResults: [],
     reviewResults: [],
@@ -1859,6 +1859,11 @@ async function runDeterministicAgentWorkflowFromCurrentPlan(stepPanel: StepPanel
   };
   events.push(createContextInspectionEvent(context, "Agent repo context"));
   try {
+    // Convert inside the try so an invalid plan (e.g. a write step with a
+    // descriptive target instead of a file path) surfaces as one clear pipeline
+    // failure rather than an unhandled throw before the pipeline starts.
+    const plan = convertBuildrPlanToAgentPlan(currentPlan);
+    agentPipelineState.plan = plan;
     const completed = await createReviewedPatchApprovals(plan, context, stepPanel);
     if (completed && pendingApproval === undefined && queuedPatchApprovals.length === 0) {
       await queueAgentTestGeneration(stepPanel);
@@ -2613,9 +2618,11 @@ function convertAgentPlanToBuildrPlan(goal: string, plan: AgentPlan): BuildrPlan
 }
 
 function convertBuildrPlanToAgentPlan(plan: BuildrPlan): AgentPlan {
+  const writeSteps = plan.steps.filter((step) => step.kind === "write");
+  writeSteps.forEach(assertConcreteWriteTargets);
   return {
     summary: plan.goal,
-    tasks: plan.steps.filter((step) => step.kind === "write").map((step) => ({
+    tasks: writeSteps.map((step) => ({
       id: step.id,
       title: step.title,
       instructions: [
@@ -2623,11 +2630,32 @@ function convertBuildrPlanToAgentPlan(plan: BuildrPlan): AgentPlan {
         step.scopeCheck ?? "",
         ...(step.verification ?? [])
       ].filter((part) => part.length > 0).join("\n"),
-      targetFiles: step.targets,
+      targetFiles: step.targets.map(normalizeWorkspacePath),
       dependsOn: step.dependsOn,
       acceptanceCriteria: step.verification ?? plan.acceptanceCriteria
     }))
   };
+}
+
+// A write step must name concrete workspace-relative files so the coder receives
+// real file snapshots to patch or create. Descriptive placeholders (e.g. "the app
+// entry files") otherwise pass through as bogus paths, and the coder loops forever
+// refusing to diff prose. Reject them before the pipeline runs so the user gets one
+// clear, actionable error instead of a wall of identical retry failures.
+function assertConcreteWriteTargets(step: PlanStep): void {
+  const targets = step.targets.map((target) => target.trim()).filter((target) => target.length > 0);
+  if (targets.length === 0) {
+    throw new Error(
+      `Plan step "${step.title}" writes code but names no target files. Edit the plan so it lists concrete workspace-relative files (e.g. index.html, src/snake.js).`
+    );
+  }
+  const invalid = targets.filter((target) => !isPlausibleWorkspacePath(normalizeWorkspacePath(target)));
+  if (invalid.length > 0) {
+    throw new Error(
+      `Plan step "${step.title}" has non-file targets: ${invalid.map((target) => `"${target}"`).join(", ")}. ` +
+        "Edit the plan so every write target is a concrete workspace-relative path, not a description."
+    );
+  }
 }
 
 async function createWorkspaceTree(): Promise<string[]> {

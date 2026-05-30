@@ -94,6 +94,9 @@ describe("deterministic agent contracts", () => {
     expect(isPlausibleWorkspacePath("associated style file(s)")).toBe(false);
     expect(isPlausibleWorkspacePath("current game UI component(s)")).toBe(false);
     expect(isPlausibleWorkspacePath("existing test files or a new focused test file adjacent to the game component")).toBe(false);
+    // The exact placeholder a plan emitted for a "create snake game" write step,
+    // which the coder then refused to diff on every retry.
+    expect(isPlausibleWorkspacePath("only the identified app entry files and any narrowly-scoped supporting files needed for the game")).toBe(false);
     expect(isPlausibleWorkspacePath("src/game/board.tsx")).toBe(true);
     expect(isPlausibleWorkspacePath("styles.css")).toBe(true);
   });

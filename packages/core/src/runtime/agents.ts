@@ -1,6 +1,7 @@
 import { createTextPatch, type TextPatch } from "../diff/textPatch.js";
 import { LM_STUDIO_CONTEXT_SLOT_DIAGNOSTIC, isProviderContextError, providerContextWarnings, providerErrorMessage } from "../providers/errors.js";
 import type { Provenance } from "../types.js";
+import { runBoundedParallel } from "./concurrency.js";
 import { BuildrCore } from "./buildrCore.js";
 import { TokenBudgetTracker, type TokenBudgetConfig, type TokenBudgetState, type TokenModelCall } from "./tokenBudget.js";
 
@@ -40,6 +41,7 @@ export interface MainAgentSessionOptions {
   modelId: string;
   goal: string;
   contextSummary?: string;
+  ruleGuidance?: string;
   transcript?: ChatTranscriptMessage[];
   tasks: SubAgentTask[];
   maxParallelSubAgents?: number;
@@ -135,6 +137,7 @@ export class MainAgentSession {
         currentContent: task.currentContent,
         budget: this.budget,
         budgetLabel: `sub_agent.${task.id}`,
+        ...(this.options.ruleGuidance === undefined ? {} : { ruleGuidance: this.options.ruleGuidance }),
         ...(this.options.signal === undefined ? {} : { signal: this.options.signal })
       };
       const contextSummary = createSubAgentContext(task);
@@ -205,30 +208,6 @@ export function compactAgentContext(options: {
     omittedMessages,
     omittedChars
   };
-}
-
-async function runBoundedParallel<TInput, TOutput>(
-  inputs: TInput[],
-  concurrency: number,
-  run: (input: TInput) => Promise<TOutput>
-): Promise<TOutput[]> {
-  const results = new Map<number, TOutput>();
-  let nextIndex = 0;
-  const workers = Array.from({ length: Math.min(concurrency, inputs.length) }, async () => {
-    while (nextIndex < inputs.length) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      results.set(currentIndex, await run(inputs[currentIndex]!));
-    }
-  });
-  await Promise.all(workers);
-  return inputs.map((_, index) => {
-    const result = results.get(index);
-    if (result === undefined) {
-      throw new Error(`Parallel worker did not produce result ${index}.`);
-    }
-    return result;
-  });
 }
 
 function summarizeText(text: string, maxChars: number): string {

@@ -119,6 +119,7 @@ export class BuildrCore {
     path: string;
     currentContent: string;
     contextSummary?: string;
+    ruleGuidance?: string;
     signal?: AbortSignal;
     budget?: TokenBudgetTracker;
     budgetLabel?: string;
@@ -251,10 +252,12 @@ function createFileRewriteMessages(options: {
   path: string;
   currentContent: string;
   contextSummary?: string;
+  ruleGuidance?: string;
 }): ChatMessage[] {
   const context = options.contextSummary === undefined || options.contextSummary.trim().length === 0
     ? "No additional workspace context summary is available."
     : options.contextSummary;
+  const ruleGuidance = options.ruleGuidance?.trim();
   return [
     {
       role: "system",
@@ -264,7 +267,8 @@ function createFileRewriteMessages(options: {
         "Rewrite exactly one text file to satisfy the task.",
         "Preserve unrelated code, imports, formatting style, line endings, and public APIs unless the task requires changing them.",
         "The JSON shape must be { \"summary\": string, \"updatedContent\": string }.",
-        "updatedContent must contain the complete new file contents, not a diff."
+        "updatedContent must contain the complete new file contents, not a diff.",
+        ...(ruleGuidance === undefined || ruleGuidance.length === 0 ? [] : [ruleGuidance])
       ].join("\n")
     },
     {

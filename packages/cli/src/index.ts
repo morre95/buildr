@@ -3,6 +3,7 @@ import {
   BuildrCore,
   buildWorkspaceIndex,
   compressRankedContext,
+  createBuiltInToolRegistry,
   createDebugSession,
   createMcpRegistrySnapshot,
   assessRemoteCompatibility,
@@ -11,10 +12,15 @@ import {
   MainAgentSession,
   observationsFromLog,
   rankWorkspaceContext,
+  renderRulePackGuidance,
   runCompletionGate,
   runMcpDoctor,
+  TokenBudgetTracker,
+  ToolCallingSession,
+  type ChatMessage,
   type ExecutionEvent,
   type TokenBudgetConfig,
+  type ToolCallingSessionReport,
   type WorkspaceIndex
 } from "@buildr/core";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -39,6 +45,9 @@ try {
     const options = parseCliOptions(args);
     const report = await runReadOnlyPlan(options.positionals.join(" "), options);
     process.stdout.write(`${renderStepReportToString(report)}\n`);
+  } else if (command === "agent") {
+    const options = parseCliOptions(args);
+    process.stdout.write(await runToolAgent(options.positionals.join(" "), options));
   } else if (command === "context") {
     const query = args.join(" ");
     const index = await readCachedOrBuildIndex(process.cwd());
@@ -118,13 +127,15 @@ async function runReadOnlyPlan(goal: string, options: CliOptions): Promise<{ tit
     const targets = await collectCliPlanTargets(process.cwd(), plan);
     if (targets.length > 0) {
       const contextSummary = await createCliContextSummary(process.cwd(), goal);
+      const ruleGuidance = renderRulePackGuidance(loadBuiltInRulePacks(plan.rulePacks));
       const sessionOptions = {
         core,
         modelId: options.modelId,
         goal,
         tasks: targets,
         maxParallelSubAgents: options.maxParallelSubAgents,
-        tokenBudget: createCliTokenBudgetConfig(options)
+        tokenBudget: createCliTokenBudgetConfig(options),
+        ...(ruleGuidance.length === 0 ? {} : { ruleGuidance })
       };
       const session = new MainAgentSession(contextSummary.length === 0 ? sessionOptions : {
         ...sessionOptions,
@@ -154,6 +165,75 @@ async function runReadOnlyPlan(goal: string, options: CliOptions): Promise<{ tit
     events,
     warnings: gate.ruleEvaluations.map((evaluation) => evaluation.message)
   };
+}
+
+async function runToolAgent(goal: string, options: CliOptions): Promise<string> {
+  if (goal.trim().length === 0) {
+    throw new Error("Provide a task description for buildr agent.");
+  }
+  if (options.modelId === undefined) {
+    throw new Error("buildr agent requires --model <id>.");
+  }
+  const root = process.cwd();
+  const core = createCliCore(options);
+  const contextSummary = await createCliContextSummary(root, goal);
+  const session = new ToolCallingSession({
+    adapter: core.model,
+    modelId: options.modelId,
+    messages: createToolAgentMessages(goal, contextSummary),
+    registry: createBuiltInToolRegistry({ workspaceRoot: root }),
+    budget: new TokenBudgetTracker(createCliTokenBudgetConfig(options)),
+    maxParallelTools: options.maxParallelSubAgents
+  });
+  return renderToolAgentReport(await session.run());
+}
+
+function createToolAgentMessages(goal: string, contextSummary: string): ChatMessage[] {
+  return [
+    {
+      role: "system",
+      content: [
+        "You are Buildr Agent running in a read-only CLI session.",
+        "Inspect the workspace with these tools: read_file(path), search_codebase(root, query), propose_patch(path, nextContent).",
+        "Paths are relative to the workspace root.",
+        "When you need several independent reads or searches, request them together in a single turn so they run in parallel.",
+        "apply_patch is unavailable in this read-only session; use propose_patch to suggest changes instead.",
+        "When you have enough information, reply with your final answer in plain text and no further tool calls."
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        `Task: ${goal}`,
+        "",
+        "Workspace context summary:",
+        contextSummary.trim().length === 0 ? "No workspace context summary is available yet." : contextSummary
+      ].join("\n")
+    }
+  ];
+}
+
+function renderToolAgentReport(report: ToolCallingSessionReport): string {
+  const lines: string[] = [report.finalText.trim().length > 0 ? report.finalText.trim() : "(no final answer)"];
+  if (report.toolExecutions.length > 0) {
+    lines.push("", "Tool calls:");
+    for (const execution of report.toolExecutions) {
+      const status = execution.result.ok ? "ok" : "failed";
+      const mode = execution.ranInParallel ? "parallel" : "serial";
+      lines.push(`  - ${execution.call.name} [${mode}] ${status}: ${execution.result.summary}`);
+    }
+  }
+  lines.push("", `Iterations: ${report.iterations} (${report.stoppedReason}).`);
+  if (report.tokenBudget !== undefined) {
+    lines.push(`Tokens: ${report.tokenBudget.totalTokens}/${report.tokenBudget.hardTokenCap}, est. cost $${report.tokenBudget.estimatedCostUsd.toFixed(6)}.`);
+  }
+  if (report.warnings.length > 0) {
+    lines.push("", "Warnings:");
+    for (const warning of report.warnings) {
+      lines.push(`  - ${warning}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 async function createCliContextSummary(root: string, goal: string): Promise<string> {
@@ -326,6 +406,7 @@ function printUsage(): void {
     "Usage:",
     "  buildr plan [--model qwen/qwen3-coder-30b] [--provider ollama] [--base-url http://127.0.0.1:11434] \"task description\"",
     "  buildr run [--model qwen/qwen3-coder-30b] [--hard-token-cap 32000] [--max-parallel-sub-agents 3] \"task description\"",
+    "  buildr agent --model qwen/qwen3-coder-30b [--max-parallel-sub-agents 3] \"task description\"",
     "  buildr context \"query\"",
     "  buildr index",
     "  buildr mcp list",

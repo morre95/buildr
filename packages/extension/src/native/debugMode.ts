@@ -3,8 +3,10 @@ import {
   BuildrCore,
   createDebugSession,
   createTextPatch,
+  loadBuiltInRulePacks,
   observationsFromLog,
   readCommonMistakes,
+  renderRulePackGuidance,
   type DebugHypothesis,
   type DebugObservation,
   type ProviderId,
@@ -143,6 +145,7 @@ async function proposeAndApplyDebugFix(hypothesis: DebugHypothesis, observations
   const currentContent = document.getText();
   const core = createConfiguredCore();
   const modelId = getConfiguredModelId();
+  const ruleGuidance = getActiveRuleGuidance();
   const fix = await vscode.window.withProgress({
     location: vscode.ProgressLocation.Notification,
     title: "Buildr: Proposing debug fix",
@@ -152,7 +155,8 @@ async function proposeAndApplyDebugFix(hypothesis: DebugHypothesis, observations
     modelId,
     path: target,
     currentContent,
-    contextSummary: observations.map((observation) => observation.message).slice(0, 40).join("\n")
+    contextSummary: observations.map((observation) => observation.message).slice(0, 40).join("\n"),
+    ...(ruleGuidance.length === 0 ? {} : { ruleGuidance })
   }));
 
   const patch = createTextPatch(target, currentContent, fix.updatedContent);
@@ -270,6 +274,15 @@ function createConfiguredCore(): BuildrCore {
 
 function getConfiguredModelId(): string {
   return vscode.workspace.getConfiguration("buildr.model").get<string>("modelId", "qwen/qwen3-coder-30b");
+}
+
+function getActiveRuleGuidance(): string {
+  const rulesConfig = vscode.workspace.getConfiguration("buildr.rules");
+  if (!rulesConfig.get<boolean>("enabled", true)) {
+    return "";
+  }
+  const rulePackIds = rulesConfig.get<string[]>("rulePacks", ["agent-behavior", "verification", "git-workflow"]);
+  return renderRulePackGuidance(loadBuiltInRulePacks(rulePackIds));
 }
 
 function parseProvider(value: string): ProviderId {

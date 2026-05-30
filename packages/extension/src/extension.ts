@@ -23,6 +23,7 @@ import {
   parseAgentEnvelope,
   readFileTool,
   rankWorkspaceContext,
+  renderRulePackGuidance,
   requireTrustedWorkspace,
   resolveCoderRetryLimit,
   runCompletionGate,
@@ -2996,11 +2997,13 @@ async function createPatchApprovalForActiveEditor(goal: string): Promise<Pending
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
   const context = await createWorkspaceContextSummary(goal);
+  const ruleGuidance = getActiveRuleGuidance();
   const rewriteOptions = {
     goal,
     modelId,
     path: editor.document.uri.fsPath,
     currentContent: before,
+    ...(ruleGuidance.length === 0 ? {} : { ruleGuidance }),
     ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
   };
   const rewrite = await configuredCore.createFileRewriteFromModel(context.text.length === 0 ? rewriteOptions : {
@@ -3072,6 +3075,7 @@ async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWri
     ...(context.text.length === 0 ? {} : { contextSummary: createSubAgentSourceContext(context, target) }),
     ...(context.includedFiles.length === 0 ? {} : { consultedFiles: context.includedFiles })
   })));
+  const ruleGuidance = getActiveRuleGuidance();
   const sessionOptions = {
     core: configuredCore,
     modelId,
@@ -3080,6 +3084,7 @@ async function createPatchApprovalsForPlanTargets(goal: string, targets: PlanWri
     tasks,
     maxParallelSubAgents: getMaxParallelSubAgents(),
     tokenBudget: getTokenBudgetConfig(),
+    ...(ruleGuidance.length === 0 ? {} : { ruleGuidance }),
     onTokenBudgetUpdate: (state: TokenBudgetState) => {
       tokenBudgetState = state;
       renderCurrentState(stepPanel);
@@ -3134,11 +3139,13 @@ async function createPatchApprovalForPlanTarget(goal: string, target: PlanWriteT
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
   const context = await createWorkspaceContextSummary(`${goal}\nCurrent target: ${target.path}`);
+  const ruleGuidance = getActiveRuleGuidance();
   const rewriteOptions = {
     goal: `${goal}\n\nImplement this plan step: ${target.title}`,
     modelId,
     path: target.path,
     currentContent: before,
+    ...(ruleGuidance.length === 0 ? {} : { ruleGuidance }),
     ...(activeAbortController?.signal === undefined ? {} : { signal: activeAbortController.signal })
   };
   const rewrite = await configuredCore.createFileRewriteFromModel(context.text.length === 0 ? rewriteOptions : {
@@ -3430,6 +3437,15 @@ async function refreshContextWindow(stepPanel: StepPanel): Promise<void> {
 
 function getMaxParallelSubAgents(): number {
   return vscode.workspace.getConfiguration("buildr.agents").get<number>("maxParallelSubAgents", 3);
+}
+
+function getActiveRuleGuidance(): string {
+  const rulesConfig = vscode.workspace.getConfiguration("buildr.rules");
+  if (!rulesConfig.get<boolean>("enabled", true)) {
+    return "";
+  }
+  const rulePackIds = rulesConfig.get<string[]>("rulePacks", ["agent-behavior", "verification", "git-workflow"]);
+  return renderRulePackGuidance(loadBuiltInRulePacks(rulePackIds));
 }
 
 function getConfiguredModelState(): { provider: string; modelId: string; baseUrl: string; local: boolean } {

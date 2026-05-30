@@ -68,6 +68,27 @@ export function loadBuiltInRulePacks(ids: string[]): RulePack[] {
   return builtInRulePacks.filter((pack) => pack.alwaysApply || requested.has(pack.id));
 }
 
+const SEVERITY_LABEL: Record<RuleSeverity, string> = {
+  warn: "warn",
+  error: "required",
+  block_completion: "required to complete"
+};
+
+/**
+ * Render the active rule packs as a system-prompt fragment so warn/error rules
+ * influence the agent while it works, rather than only being checked by the
+ * completion gate. Returns an empty string when no packs contribute rules.
+ */
+export function renderRulePackGuidance(rulePacks: RulePack[]): string {
+  const lines = rulePacks.flatMap((pack) =>
+    pack.rules.map((rule) => `- (${SEVERITY_LABEL[rule.severity]}) ${rule.text}`)
+  );
+  if (lines.length === 0) {
+    return "";
+  }
+  return ["Follow these project rules while completing the task:", ...lines].join("\n");
+}
+
 export function evaluateCompletionRules(options: {
   rulePacks: RulePack[];
   hasVerificationEvidence: boolean;

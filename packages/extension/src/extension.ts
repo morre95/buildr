@@ -1787,13 +1787,15 @@ async function runDeterministicAgentWorkflow(rawTask: string, fileMentions: stri
     agentPipelineState.plan = architect.data.plan;
     agentPipelineState.warnings.push(...architect.warnings);
     currentPlan = convertAgentPlanToBuildrPlan(rawTask, architect.data.plan);
+    const architectEvidence = lastStreamEvidence();
     events.push({
       id: `agent:architect:${Date.now()}`,
       title: "Architect plan",
       status: "completed",
       tool: "agent_architect",
       summary: `Created deterministic plan with ${architect.data.plan.tasks.length} task(s).`,
-      warnings: architect.warnings
+      warnings: architect.warnings,
+      ...(architectEvidence === undefined ? {} : { evidence: architectEvidence })
     });
     renderCurrentState(stepPanel);
 
@@ -1938,13 +1940,15 @@ async function runCoderReviewLoop(
       }), validateCoderOutput, stepPanel);
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
+      const coderEvidence = lastStreamEvidence();
       events.push({
         id: `agent:coder:${task.id}:${attempt}:invalid-json`,
         title: `Coder: ${task.title}`,
         status: "failed",
         tool: "agent_coder",
         summary: `Coder returned invalid JSON: ${summary}`,
-        warnings: [summary]
+        warnings: [summary],
+        ...(coderEvidence === undefined ? {} : { evidence: coderEvidence })
       });
       recordFailure(summary);
       feedback = [
@@ -1962,13 +1966,15 @@ async function runCoderReviewLoop(
       patches = await createValidatedPatches(coder.data, files);
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
+      const coderEvidence = lastStreamEvidence();
       events.push({
         id: `agent:coder:${task.id}:${attempt}:invalid-diff`,
         title: `Coder: ${task.title}`,
         status: "failed",
         tool: "agent_coder",
         summary: `Coder returned invalid diffs: ${summary}`,
-        warnings: coder.warnings
+        warnings: coder.warnings,
+        ...(coderEvidence === undefined ? {} : { evidence: coderEvidence })
       });
       recordFailure(summary);
       feedback = [
@@ -2022,13 +2028,15 @@ async function runCoderReviewLoop(
       status: reviewer.data.status,
       issues
     });
+    const reviewerEvidence = lastStreamEvidence();
     events.push({
       id: `agent:reviewer:${task.id}:${attempt}`,
       title: `Reviewer: ${task.title}`,
       status: reviewer.data.status === "approved" ? "completed" : "failed",
       tool: "agent_reviewer",
       summary: reviewer.data.status === "approved" ? "Reviewer approved the diff." : `Reviewer requested changes: ${issues.join("; ")}`,
-      warnings: reviewer.warnings
+      warnings: reviewer.warnings,
+      ...(reviewerEvidence === undefined ? {} : { evidence: reviewerEvidence })
     });
     if (reviewer.data.status === "approved") {
       return coderResult;
@@ -2352,6 +2360,7 @@ async function queueAgentTestGeneration(stepPanel: StepPanel): Promise<void> {
   }), validateTesterOutput, stepPanel);
   agentPipelineState.testCases = tester.data.testCases;
   agentPipelineState.warnings.push(...tester.warnings);
+  const testerCasesEvidence = lastStreamEvidence();
   events.push({
     id: `agent:tester:cases:${Date.now()}`,
     title: "Tester generated test cases",
@@ -2360,7 +2369,8 @@ async function queueAgentTestGeneration(stepPanel: StepPanel): Promise<void> {
     summary: tester.data.testCases.length > 0
       ? `Generated ${tester.data.testCases.length} test case(s).`
       : "Tester did not generate executable test cases.",
-    warnings: tester.warnings
+    warnings: tester.warnings,
+    ...(testerCasesEvidence === undefined ? {} : { evidence: testerCasesEvidence })
   });
 
   const testCase = tester.data.testCases[0];
@@ -2386,13 +2396,15 @@ async function inspectAgentTestResults(stepPanel: StepPanel): Promise<void> {
   }), validateTesterOutput, stepPanel);
   const status = tester.data.result?.status ?? (agentPipelineState.testObservations.every((observation) => observation.exitCode === 0) ? "passed" : "failed");
   const failures = tester.data.result?.failures ?? [];
+  const testerResultEvidence = lastStreamEvidence();
   events.push({
     id: `agent:tester:result:${Date.now()}`,
     title: "Tester inspected results",
     status: status === "passed" ? "completed" : "failed",
     tool: "agent_tester",
     summary: status === "passed" ? "Tester marked verification as passed." : `Tester marked verification as failed: ${failures.join("; ")}`,
-    warnings: tester.warnings
+    warnings: tester.warnings,
+    ...(testerResultEvidence === undefined ? {} : { evidence: testerResultEvidence })
   });
   completeAgentPipeline(status === "passed" ? "Agent workflow completed." : "Agent workflow completed with failing tests.");
   renderCurrentState(stepPanel, createFinalReportSummary());
@@ -2426,6 +2438,14 @@ async function invokeStreamingJsonAgent<TData>(
     }
     stepPanel.postAgentStreamComplete();
   }
+}
+
+// Raw model output of the step that just finished streaming, captured so it can
+// be attached to that step's execution event and stay visible after the next
+// step starts (the live activeStream view is overwritten each step).
+function lastStreamEvidence(): { outputExcerpt: string } | undefined {
+  const raw = agentPipelineState?.activeStream?.raw.trim();
+  return raw === undefined || raw.length === 0 ? undefined : { outputExcerpt: raw.slice(0, 8000) };
 }
 
 async function invokeJsonAgent<TData>(

@@ -339,9 +339,7 @@ interface StateSections {
 }
 
 function renderStateSections(state: StepPanelState): StateSections {
-  const events = state.events
-    .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
-    .join("");
+  const execution = renderExecutionSection(state);
   const messages = state.messages
     .map((message) => `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><p>${escapeHtml(message.text)}</p></article>`)
     .join("");
@@ -354,7 +352,7 @@ function renderStateSections(state: StepPanelState): StateSections {
   const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
 
   return {
-    content: `${messages}${tokenBudget}${agentPipeline}${stream}${plan}<section><h2>Execution</h2><ol>${events}</ol></section>${pending}${finalSummary}`,
+    content: `${messages}${tokenBudget}${agentPipeline}${stream}${plan}${execution}${pending}${finalSummary}`,
     activity: renderActivity(state),
     running: state.running,
     mode: state.mode,
@@ -366,9 +364,7 @@ function renderStateSections(state: StepPanelState): StateSections {
 
 function renderState(state: StepPanelState): string {
   const nonce = createNonce();
-  const events = state.events
-    .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
-    .join("");
+  const execution = renderExecutionSection(state);
   const messages = state.messages
     .map((message) => `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><p>${escapeHtml(message.text)}</p></article>`)
     .join("");
@@ -749,7 +745,7 @@ function renderState(state: StepPanelState): string {
         ${agentPipeline}
         ${stream}
         ${plan}
-        <section><h2>Execution</h2><ol>${events}</ol></section>
+        ${execution}
         ${pending}
         ${finalSummary}
       </div>
@@ -1406,21 +1402,40 @@ function renderAgentPipeline(agentPipeline: WebviewAgentPipelineState | undefine
   const warnings = agentPipeline.warnings.length === 0
     ? ""
     : `<pre>${escapeHtml(agentPipeline.warnings.join("\n"))}</pre>`;
-  const activeStream = agentPipeline.activeStream === undefined
-    ? ""
-    : `<details id="agent-stream-details" class="stream-output" ${agentPipeline.activeStream.active ? "open" : ""}>
-        <summary id="agent-stream-label">${escapeHtml(agentPipeline.activeStream.label)}</summary>
-        <pre id="agent-stream-raw">${escapeHtml(agentPipeline.activeStream.raw)}</pre>
-      </details>`;
+  // The live raw output is rendered as the active step inside the Execution
+  // section (see renderActiveStreamStep), not here.
   return `<section aria-label="Agent pipeline">
     <h2>Agent Pipeline</h2>
     <p>Phase: ${escapeHtml(agentPipeline.phase)} · Task ${agentPipeline.currentTaskIndex + 1}/${taskCount}</p>
-    ${activeStream}
     ${reviews}
     ${tests}
     ${diffs}
     ${warnings}
   </section>`;
+}
+
+function renderExecutionSection(state: StepPanelState): string {
+  const events = state.events
+    .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
+    .join("");
+  const activeStreamStep = renderActiveStreamStep(state.agentPipeline?.activeStream);
+  return `<section><h2>Execution</h2><ol>${events}${activeStreamStep}</ol></section>`;
+}
+
+// The currently-streaming agent step: shown as the last item in the Execution
+// list with its live raw output. Keeps the agent-stream-* element ids so the
+// incremental stream-delta handlers update it in place. Once the step finishes
+// (active === false) its completed event takes over and this item disappears.
+function renderActiveStreamStep(activeStream: WebviewAgentPipelineState["activeStream"]): string {
+  if (activeStream === undefined || !activeStream.active) {
+    return "";
+  }
+  return `<li class="execution-step stream-step">
+    <details id="agent-stream-details" class="stream-output" open>
+      <summary id="agent-stream-label">${escapeHtml(activeStream.label)}</summary>
+      <pre id="agent-stream-raw">${escapeHtml(activeStream.raw)}</pre>
+    </details>
+  </li>`;
 }
 
 function renderPendingApproval(approval: PendingApproval): string {

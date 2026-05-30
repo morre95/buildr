@@ -224,6 +224,8 @@ export function createCoderMessages(options: {
     "Every hunk line must be a single valid JSON string. Escape quotes and backslashes inside code lines.",
     "For new files, use oldStart 0, oldLines 0, newStart 1, newLines equal to the number of added lines, and hunk lines that all start with '+'.",
     "Every hunk line must start with exactly one of: space for context, + for additions, - for removals.",
+    "Include 2-3 unchanged context lines immediately before and after each change so it can be located.",
+    "oldStart/oldLines/newStart/newLines are approximate hints; the context and removed lines you quote must match the existing file content (copy them verbatim from the provided file).",
     "Do not decide routing, retries, testing, approval, or completion."
   ], options.input);
 }
@@ -274,50 +276,87 @@ export function applyAgentFileDiff(current: string, diff: AgentFileDiff): string
   const hadTrailingNewline = current.endsWith("\n");
   const lines = current.length === 0 ? [] : current.replace(/\n$/u, "").split("\n");
   const hunks = normalizeAgentDiffHunks(current, diff);
-  let offset = 0;
+  let searchFrom = 0;
 
   for (const hunk of hunks) {
-    const start = hunk.oldStart <= 0 ? 0 : hunk.oldStart - 1 + offset;
-    const replacement: string[] = [];
-    let cursor = start;
-    let removed = 0;
+    const ops = parseHunkOps(hunk.lines, diff.path);
+    const expected = ops.filter((op) => op.kind !== "add").map((op) => op.text);
+    const location = locateHunk(lines, expected, hunk.oldStart, searchFrom, diff.path);
 
-    for (const line of hunk.lines) {
-      const prefix = line[0];
-      const text = line.slice(1);
-      if (prefix === " ") {
-        if (lines[cursor] !== text) {
-          throw new Error(`Patch conflict for ${diff.path}: context mismatch at line ${cursor + 1}.`);
-        }
-        replacement.push(text);
+    const replacement: string[] = [];
+    let cursor = location;
+    for (const op of ops) {
+      if (op.kind === "context") {
+        // Preserve the file's own line so its real indentation survives even
+        // when the model reproduced the context with different whitespace.
+        replacement.push(lines[cursor] ?? op.text);
         cursor += 1;
-        removed += 1;
-      } else if (prefix === "-") {
-        if (lines[cursor] !== text) {
-          throw new Error(`Patch conflict for ${diff.path}: removal mismatch at line ${cursor + 1}.`);
-        }
+      } else if (op.kind === "remove") {
         cursor += 1;
-        removed += 1;
-      } else if (prefix === "+") {
-        replacement.push(text);
       } else {
-        throw new Error(`Patch conflict for ${diff.path}: hunk lines must start with space, +, or -.`);
+        replacement.push(op.text);
       }
     }
 
-    if (removed !== hunk.oldLines) {
-      throw new Error(`Patch conflict for ${diff.path}: hunk oldLines does not match removed/context lines.`);
-    }
-    const added = replacement.length;
-    if (added !== hunk.newLines) {
-      throw new Error(`Patch conflict for ${diff.path}: hunk newLines does not match added/context lines.`);
-    }
-    lines.splice(start, removed, ...replacement);
-    offset += added - removed;
+    lines.splice(location, expected.length, ...replacement);
+    searchFrom = location + replacement.length;
   }
 
   const next = lines.join("\n");
   return hadTrailingNewline || next.length > 0 ? `${next}\n` : next;
+}
+
+interface HunkOp {
+  kind: "context" | "remove" | "add";
+  text: string;
+}
+
+function parseHunkOps(hunkLines: string[], path: string): HunkOp[] {
+  return hunkLines.map((line) => {
+    const text = line.slice(1);
+    switch (line[0]) {
+      case " ":
+        return { kind: "context", text };
+      case "-":
+        return { kind: "remove", text };
+      case "+":
+        return { kind: "add", text };
+      default:
+        throw new Error(`Patch conflict for ${path}: hunk lines must start with space, +, or -.`);
+    }
+  });
+}
+
+// Locate a hunk by matching its context/removal lines against the file rather
+// than trusting the model's line numbers and counts. LLMs reproduce line
+// content far more reliably than exact indentation or 1-based offsets, so the
+// match is whitespace-tolerant and oldStart is only a hint used to disambiguate
+// repeated matches and keep multiple hunks in order.
+function locateHunk(lines: string[], expected: string[], oldStart: number, searchFrom: number, path: string): number {
+  const hint = oldStart <= 0 ? 0 : oldStart - 1;
+  if (expected.length === 0) {
+    return Math.min(lines.length, Math.max(searchFrom, Math.min(hint, lines.length)));
+  }
+  let best: number | undefined;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (let index = 0; index + expected.length <= lines.length; index += 1) {
+    if (!blockMatchesAt(lines, index, expected)) {
+      continue;
+    }
+    const score = (index < searchFrom ? 1_000_000 : 0) + Math.abs(index - hint);
+    if (score < bestScore) {
+      bestScore = score;
+      best = index;
+    }
+  }
+  if (best === undefined) {
+    throw new Error(`Patch conflict for ${path}: could not locate the changed lines near line ${oldStart}.`);
+  }
+  return best;
+}
+
+function blockMatchesAt(lines: string[], start: number, expected: string[]): boolean {
+  return expected.every((line, offset) => (lines[start + offset] ?? "").trim() === line.trim());
 }
 
 export function createTextPatchFromAgentDiff(current: string, diff: AgentFileDiff, absolutePath: string): TextPatch {

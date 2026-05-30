@@ -206,7 +206,7 @@ describe("deterministic agent contracts", () => {
     expect(prompt).toContain("Do not use watch mode");
   });
 
-  it("detects hunk conflicts", () => {
+  it("throws when a hunk's lines cannot be located in the file", () => {
     const current = "one\ntwo\n";
     const diff: AgentFileDiff = {
       path: "src/example.ts",
@@ -220,7 +220,46 @@ describe("deterministic agent contracts", () => {
       }]
     };
 
-    expect(() => applyAgentFileDiff(current, diff)).toThrow("removal mismatch");
+    expect(() => applyAgentFileDiff(current, diff)).toThrow("could not locate");
+  });
+
+  it("applies a hunk despite wrong line numbers and indentation", () => {
+    // Mirrors the real failure: the model reports the wrong oldStart and uses
+    // inconsistent leading whitespace, but the line content is correct.
+    const current = [
+      "function render() {",
+      "  ctx.clearRect(0, 0, w, h);",
+      "  ctx.fillStyle = '#0f172a';",
+      "  ctx.fillRect(0, 0, w, h);",
+      "}",
+      ""
+    ].join("\n");
+    const diff: AgentFileDiff = {
+      path: "snake.js",
+      beforeHash: hashText(current),
+      hunks: [{
+        oldStart: 71,
+        oldLines: 9,
+        newStart: 71,
+        newLines: 9,
+        lines: [
+          " function render() {",
+          "   ctx.clearRect(0, 0, w, h);",
+          "-    ctx.fillStyle = '#0f172a';",
+          "+  ctx.fillStyle = '#facc15';",
+          "   ctx.fillRect(0, 0, w, h);"
+        ]
+      }]
+    };
+
+    expect(applyAgentFileDiff(current, diff)).toBe([
+      "function render() {",
+      "  ctx.clearRect(0, 0, w, h);",
+      "  ctx.fillStyle = '#facc15';",
+      "  ctx.fillRect(0, 0, w, h);",
+      "}",
+      ""
+    ].join("\n"));
   });
 
   it("normalizes raw new-file hunk lines into additions", () => {

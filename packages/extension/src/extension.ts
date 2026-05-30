@@ -57,6 +57,7 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import * as vscode from "vscode";
 import { BuildrSecretStore } from "./credentials.js";
+import { inferFastAgentNewFileTarget, isFastAgentEditablePath, normalizeWorkspacePath } from "./fastAgentTarget.js";
 import { registerBuildrChatParticipant } from "./native/chatParticipant.js";
 import { runDebugFromInput } from "./native/debugMode.js";
 import { readDiagnosticsSummary } from "./native/diagnostics.js";
@@ -1470,30 +1471,6 @@ function selectFastAgentTargetFiles(rawTask: string, mentionedFiles: string[], c
     .slice(0, 2);
 }
 
-function inferFastAgentNewFileTarget(rawTask: string): string | undefined {
-  const normalized = rawTask.toLowerCase();
-  if (!/\b(create|build|make|generate|scaffold|new)\b/u.test(normalized)) {
-    return undefined;
-  }
-  if (/\breadme\b/u.test(normalized)) {
-    return "README.md";
-  }
-  if (/\b(json|config)\b/u.test(normalized)) {
-    return "config.json";
-  }
-  if (/\b(markdown|doc|documentation)\b/u.test(normalized)) {
-    return "notes.md";
-  }
-  if (/\b(game|snake|canvas|html|page|site|web|css|javascript|js)\b/u.test(normalized)) {
-    return "index.html";
-  }
-  return "index.html";
-}
-
-function isFastAgentEditablePath(path: string): boolean {
-  return /\.(c|cfg|cjs|clj|cpp|cs|css|dart|erl|ex|go|h|hpp|html|ini|java|js|json|jsx|jl|kt|lua|md|mjs|php|pl|py|r|rb|rs|scala|sh|sql|svelte|swift|toml|ts|tsx|txt|vue|xml|yaml|yml|zig)$/u.test(path);
-}
-
 function createSubAgentSourceContext(context: WorkspaceContextSummary, target: PlanWriteTarget): string {
   return [
     `Target assignment: ${target.title}`,
@@ -1543,10 +1520,6 @@ function appendMentionHint(goal: string, mentionedFiles: string[]): string {
     "User-mentioned files:",
     ...mentionedFiles.map((file) => `@${file}`)
   ].join("\n");
-}
-
-function normalizeWorkspacePath(path: string): string {
-  return path.replaceAll("\\", "/").replace(/^\.?\//u, "");
 }
 
 function stripMentionPunctuation(mention: string): string {

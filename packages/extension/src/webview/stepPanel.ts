@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { BuildrPlan, ExecutionEvent, PendingApproval, TokenBudgetState } from "@buildr/core";
+import type { BuildrPlan, ExecutionEvent, ModelInfo, PendingApproval, TokenBudgetState } from "@buildr/core";
 
 export type ApprovalDecision = "approve" | "deny";
 export type BuildrChatMode = "ask" | "plan" | "fast-agent" | "agent" | "debug";
@@ -105,6 +105,8 @@ export class StepPanel {
   private changePlanHandler: (() => void) | undefined;
   private stopHandler: (() => void) | undefined;
   private compactHandler: (() => void) | undefined;
+  private requestModelsHandler: (() => void) | undefined;
+  private selectModelHandler: ((modelId: string) => void) | undefined;
   private disposeHandler: (() => void) | undefined;
   private messageDisposable: vscode.Disposable | undefined;
 
@@ -154,6 +156,14 @@ export class StepPanel {
     this.compactHandler = handler;
   }
 
+  onRequestModels(handler: () => void): void {
+    this.requestModelsHandler = handler;
+  }
+
+  onSelectModel(handler: (modelId: string) => void): void {
+    this.selectModelHandler = handler;
+  }
+
   onDispose(handler: () => void): void {
     this.disposeHandler = handler;
   }
@@ -180,6 +190,14 @@ export class StepPanel {
     void this.panel?.webview.postMessage({
       type: "fileSearchResults",
       results
+    });
+  }
+
+  postModelList(models: ModelInfo[], current: string): void {
+    void this.panel?.webview.postMessage({
+      type: "modelList",
+      models,
+      current
     });
   }
 
@@ -302,6 +320,17 @@ export class StepPanel {
         return;
       }
 
+      if (isMessageOfType(message, "requestModels")) {
+        this.requestModelsHandler?.();
+        return;
+      }
+
+      const selectModel = parseSelectModelMessage(message);
+      if (selectModel !== undefined) {
+        this.selectModelHandler?.(selectModel);
+        return;
+      }
+
       const openSession = parseOpenSessionMessage(message);
       if (openSession !== undefined) {
         this.openSessionHandler?.(openSession);
@@ -334,6 +363,7 @@ interface StateSections {
   running: boolean;
   mode: BuildrChatMode;
   model: string;
+  modelId: string;
   contextSize: string;
   sessions: string;
 }
@@ -357,6 +387,7 @@ function renderStateSections(state: StepPanelState): StateSections {
     running: state.running,
     mode: state.mode,
     model: renderModelState(state.model),
+    modelId: state.model?.modelId ?? "",
     contextSize: renderContextSize(state.contextSize),
     sessions: renderSessionControls(state.sessions ?? [], state.activeSessionId)
   };
@@ -624,6 +655,91 @@ function renderState(state: StepPanelState, version = ""): string {
         white-space: nowrap;
       }
 
+      .model-picker {
+        position: relative;
+        flex: 0 1 auto;
+        min-width: 0;
+      }
+
+      #model-picker-button {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        max-width: 220px;
+        padding: 0 8px;
+      }
+
+      #model-picker-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .model-picker-caret {
+        flex: 0 0 auto;
+        font-size: 10px;
+        opacity: 0.8;
+      }
+
+      .model-dropdown {
+        position: absolute;
+        left: 0;
+        bottom: calc(100% + 4px);
+        z-index: 5;
+        display: flex;
+        flex-direction: column;
+        width: 340px;
+        max-width: 80vw;
+        border: 1px solid var(--vscode-quickInputList-focusBackground);
+        background: var(--vscode-quickInput-background);
+        box-shadow: 0 4px 16px rgb(0 0 0 / 28%);
+      }
+
+      .model-dropdown[hidden] {
+        display: none;
+      }
+
+      #model-search {
+        margin: 6px;
+        padding: 6px 8px;
+      }
+
+      .model-options {
+        max-height: 260px;
+        overflow: auto;
+      }
+
+      .model-option {
+        display: block;
+        width: 100%;
+        height: auto;
+        padding: 6px 8px;
+        text-align: left;
+        border-radius: 0;
+        color: var(--vscode-quickInput-foreground);
+        background: transparent;
+      }
+
+      .model-option:hover, .model-option:focus, .model-option.active {
+        background: var(--vscode-quickInputList-focusBackground);
+      }
+
+      .model-option-id {
+        display: block;
+      }
+
+      .model-option-detail {
+        display: block;
+        margin-top: 2px;
+        font-size: 0.85em;
+        color: var(--vscode-descriptionForeground);
+      }
+
+      .model-empty {
+        padding: 8px;
+        color: var(--vscode-descriptionForeground);
+      }
+
       .context-size.near-cap {
         color: var(--vscode-errorForeground);
       }
@@ -761,6 +877,7 @@ function renderState(state: StepPanelState, version = ""): string {
       <form class="composer" id="composer">
         ${activity}
         <div class="toolbar">
+          ${renderModelPicker(state.model)}
           <select id="mode" aria-label="Buildr mode">
             ${renderModeOption("ask", "Ask", state.mode)}
             ${renderModeOption("plan", "Plan", state.mode)}
@@ -789,6 +906,14 @@ function renderState(state: StepPanelState, version = ""): string {
       const SLASH_COMMANDS = [{ name: "/compact", description: "Summarize earlier conversation passed to multi-step agent runs" }];
       let activeMention = undefined;
       let activeSlash = undefined;
+      const modelPicker = document.getElementById("model-picker");
+      const modelButton = document.getElementById("model-picker-button");
+      const modelDropdown = document.getElementById("model-dropdown");
+      const modelSearch = document.getElementById("model-search");
+      const modelOptions = document.getElementById("model-options");
+      let modelList = [];
+      let modelListLoaded = false;
+      let currentModelId = modelButton?.getAttribute("data-model-id") ?? "";
       scrollContentToLatest();
 
       document.querySelectorAll("[data-approval]").forEach((button) => {
@@ -862,6 +987,127 @@ function renderState(state: StepPanelState, version = ""): string {
         vscode.postMessage({ type: "changePlan" });
       });
 
+      modelButton?.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (modelDropdown.hidden) {
+          openModelDropdown();
+        } else {
+          closeModelDropdown();
+        }
+      });
+
+      modelSearch?.addEventListener("input", () => {
+        renderModelOptions(modelSearch.value.trim());
+      });
+
+      modelSearch?.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeModelDropdown();
+          modelButton?.focus();
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const firstOption = modelOptions.querySelector(".model-option");
+          if (firstOption !== null) {
+            firstOption.click();
+            return;
+          }
+          const query = modelSearch.value.trim();
+          if (query.length > 0) {
+            selectModel(query);
+          }
+        }
+      });
+
+      document.addEventListener("click", (event) => {
+        if (modelPicker !== null && !modelPicker.contains(event.target) && !modelDropdown.hidden) {
+          closeModelDropdown();
+        }
+      });
+
+      function openModelDropdown() {
+        modelDropdown.hidden = false;
+        modelButton?.setAttribute("aria-expanded", "true");
+        modelSearch.value = "";
+        if (modelListLoaded) {
+          renderModelOptions("");
+        } else {
+          modelOptions.replaceChildren(buildModelEmpty("Loading models…"));
+          vscode.postMessage({ type: "requestModels" });
+        }
+        modelSearch.focus();
+      }
+
+      function closeModelDropdown() {
+        modelDropdown.hidden = true;
+        modelButton?.setAttribute("aria-expanded", "false");
+      }
+
+      function buildModelEmpty(text) {
+        const empty = document.createElement("div");
+        empty.className = "model-empty";
+        empty.textContent = text;
+        return empty;
+      }
+
+      function renderModelOptions(query) {
+        const lower = query.toLowerCase();
+        const matches = modelList.filter((model) =>
+          model.id.toLowerCase().includes(lower) ||
+          (typeof model.displayName === "string" ? model.displayName.toLowerCase().includes(lower) : false)
+        );
+        modelOptions.replaceChildren();
+        if (matches.length === 0 && query.length === 0) {
+          modelOptions.append(buildModelEmpty(modelListLoaded
+            ? "No models reported by the provider. Type an id and press Enter."
+            : "Loading models…"));
+          return;
+        }
+        for (const model of matches.slice(0, 100)) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "model-option" + (model.id === currentModelId ? " active" : "");
+          button.setAttribute("role", "option");
+          const id = document.createElement("span");
+          id.className = "model-option-id";
+          id.textContent = model.id;
+          button.append(id);
+          if (typeof model.displayName === "string" && model.displayName.length > 0 && model.displayName !== model.id) {
+            const detail = document.createElement("span");
+            detail.className = "model-option-detail";
+            detail.textContent = model.displayName;
+            button.append(detail);
+          }
+          button.addEventListener("click", () => selectModel(model.id));
+          modelOptions.append(button);
+        }
+        if (query.length > 0 && !modelList.some((model) => model.id === query)) {
+          const custom = document.createElement("button");
+          custom.type = "button";
+          custom.className = "model-option";
+          custom.setAttribute("role", "option");
+          custom.textContent = 'Use "' + query + '"';
+          custom.addEventListener("click", () => selectModel(query));
+          modelOptions.append(custom);
+        }
+      }
+
+      function selectModel(modelId) {
+        const trimmed = modelId.trim();
+        if (trimmed.length === 0) {
+          return;
+        }
+        closeModelDropdown();
+        currentModelId = trimmed;
+        const labelEl = document.getElementById("model-picker-label");
+        if (labelEl !== null) {
+          labelEl.textContent = trimmed;
+        }
+        vscode.postMessage({ type: "selectModel", modelId: trimmed });
+      }
+
       prompt.addEventListener("input", () => {
         activeSlash = findActiveSlash(prompt.value);
         if (activeSlash !== undefined) {
@@ -899,6 +1145,17 @@ function renderState(state: StepPanelState, version = ""): string {
         }
         if (event.data?.type === "fileSearchResults") {
           renderSuggestions(event.data.results ?? []);
+          return;
+        }
+        if (event.data?.type === "modelList") {
+          modelList = Array.isArray(event.data.models) ? event.data.models : [];
+          modelListLoaded = true;
+          if (typeof event.data.current === "string") {
+            currentModelId = event.data.current;
+          }
+          if (modelDropdown !== null && !modelDropdown.hidden) {
+            renderModelOptions(modelSearch.value.trim());
+          }
           return;
         }
         if (event.data?.type === "streamStart") {
@@ -1042,6 +1299,15 @@ function renderState(state: StepPanelState, version = ""): string {
           modelEl.outerHTML = sections.model;
         }
 
+        if (typeof sections.modelId === "string") {
+          currentModelId = sections.modelId;
+          const labelEl = document.getElementById("model-picker-label");
+          if (labelEl !== null) {
+            labelEl.textContent = sections.modelId.length > 0 ? sections.modelId : "Select model";
+          }
+          modelButton?.setAttribute("data-model-id", sections.modelId);
+        }
+
         const contextSizeEl = document.querySelector(".context-size");
         if (contextSizeEl !== null && sections.contextSize) {
           contextSizeEl.outerHTML = sections.contextSize;
@@ -1177,6 +1443,21 @@ function renderState(state: StepPanelState, version = ""): string {
 
 function renderModeOption(value: BuildrChatMode, label: string, selected: BuildrChatMode): string {
   return `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`;
+}
+
+function renderModelPicker(model: WebviewModelState | undefined): string {
+  const modelId = model?.modelId ?? "";
+  const label = modelId.length === 0 ? "Select model" : modelId;
+  return `<div class="model-picker" id="model-picker">
+    <button type="button" id="model-picker-button" class="secondary" data-model-id="${escapeHtml(modelId)}" title="Select model" aria-haspopup="listbox" aria-expanded="false">
+      <span id="model-picker-label">${escapeHtml(label)}</span>
+      <span class="model-picker-caret" aria-hidden="true">▾</span>
+    </button>
+    <div class="model-dropdown" id="model-dropdown" hidden>
+      <input type="text" id="model-search" placeholder="Search models..." autocomplete="off" aria-label="Search models">
+      <div class="model-options" id="model-options" role="listbox"></div>
+    </div>
+  </div>`;
 }
 
 function renderSessionControls(sessions: SavedAgentSessionSummary[], activeSessionId: string | undefined): string {
@@ -1578,6 +1859,14 @@ function parseFileSearchMessage(message: unknown): FileSearchMessage | undefined
   return {
     query: message.query
   };
+}
+
+function parseSelectModelMessage(message: unknown): string | undefined {
+  if (!isRecord(message) || message.type !== "selectModel" || typeof message.modelId !== "string") {
+    return undefined;
+  }
+  const trimmed = message.modelId.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function parseOpenSessionMessage(message: unknown): string | undefined {

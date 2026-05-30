@@ -110,6 +110,10 @@ let contextWindowKey: string | undefined;
 let lastContextTokens: number | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let providerSecrets: BuildrSecretStore | undefined;
+// Per-session cache of provider models for the webview picker, keyed by
+// provider|baseUrl so switching providers fetches a fresh list without a
+// repeated network round-trip (or progress popup) each time the picker opens.
+const webviewModelCache = new Map<string, ModelInfo[]>();
 let activeSessionId = "";
 let savedAgentSessions: PersistedAgentSession[] = [];
 let agentPipelineState: AgentPipelineState | undefined;
@@ -459,6 +463,12 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   stepPanel.onCompact(() => {
     compactConversationContext(stepPanel);
+  });
+  stepPanel.onRequestModels(() => {
+    void handleRequestModels(stepPanel);
+  });
+  stepPanel.onSelectModel((modelId) => {
+    void handleSelectModel(modelId, stepPanel);
   });
   stepPanel.onDispose(() => {
     persistActiveAgentSession();
@@ -3451,6 +3461,35 @@ function getActiveRuleGuidance(): string {
   }
   const rulePackIds = rulesConfig.get<string[]>("rulePacks", ["agent-behavior", "verification", "git-workflow"]);
   return renderRulePackGuidance(loadBuiltInRulePacks(rulePackIds));
+}
+
+async function handleRequestModels(stepPanel: StepPanel): Promise<void> {
+  const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
+  const key = `${provider}|${baseUrl}`;
+  let models = webviewModelCache.get(key);
+  if (models === undefined) {
+    const adapter = createConfiguredCore().model;
+    try {
+      models = adapter.listModels === undefined ? [] : await adapter.listModels();
+    } catch (error) {
+      // Surface nothing intrusive in the webview path: the picker shows an empty
+      // state and still allows entering a model id manually. Log for debugging.
+      console.error("Buildr could not list provider models:", error);
+      models = [];
+    }
+    webviewModelCache.set(key, models);
+  }
+  stepPanel.postModelList(models, getConfiguredModelId());
+}
+
+async function handleSelectModel(modelId: string, stepPanel: StepPanel): Promise<void> {
+  const trimmed = modelId.trim();
+  if (trimmed.length === 0 || trimmed === getConfiguredModelId()) {
+    return;
+  }
+  await vscode.workspace.getConfiguration("buildr.model").update("modelId", trimmed, vscode.ConfigurationTarget.Workspace);
+  renderCurrentState(stepPanel);
+  void refreshContextWindow(stepPanel);
 }
 
 function getConfiguredModelState(): { provider: string; modelId: string; baseUrl: string; local: boolean } {

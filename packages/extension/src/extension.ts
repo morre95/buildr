@@ -17,6 +17,7 @@ import {
   eventFromToolResult,
   formatTextPatchAsGitDiff,
   hashText,
+  isPlausibleWorkspacePath,
   loadBuiltInRulePacks,
   MainAgentSession,
   parseAgentEnvelope,
@@ -3157,7 +3158,11 @@ function resolvePlanTarget(root: string, target: string): string | undefined {
     trimmed.includes("${") ||
     trimmed.includes("*") ||
     trimmed.toLowerCase().includes("approved ") ||
-    trimmed.endsWith("/")
+    trimmed.endsWith("/") ||
+    // Reject plan steps whose target is a description rather than a real path
+    // (e.g. "associated style file(s)"); otherwise Buildr creates files named
+    // after the description and writes incomplete content into them.
+    !isPlausibleWorkspacePath(normalizeWorkspacePath(trimmed))
   ) {
     return undefined;
   }

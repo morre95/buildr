@@ -650,7 +650,7 @@ function assertWorkspacePathArray(value: unknown, field: string): asserts value 
   });
 }
 
-function isPlausibleWorkspacePath(path: string): boolean {
+export function isPlausibleWorkspacePath(path: string): boolean {
   const trimmed = path.trim();
   if (trimmed.length === 0) {
     return false;

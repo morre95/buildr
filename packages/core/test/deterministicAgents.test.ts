@@ -7,6 +7,7 @@ import {
   formatTextPatchAsGitDiff,
   hashText,
   parseAgentEnvelope,
+  isPlausibleWorkspacePath,
   resolveCoderRetryLimit,
   validateArchitectOutput,
   validateCoderOutput,
@@ -85,6 +86,16 @@ describe("deterministic agent contracts", () => {
     });
 
     expect(result.plan.tasks[0]?.targetFiles).toEqual(["src/snake.js", "index.html"]);
+  });
+
+  it("rejects description-like strings as workspace paths", () => {
+    // Real targets a confused plan/architect model emitted; each became a file
+    // named after its description before this gate existed.
+    expect(isPlausibleWorkspacePath("associated style file(s)")).toBe(false);
+    expect(isPlausibleWorkspacePath("current game UI component(s)")).toBe(false);
+    expect(isPlausibleWorkspacePath("existing test files or a new focused test file adjacent to the game component")).toBe(false);
+    expect(isPlausibleWorkspacePath("src/game/board.tsx")).toBe(true);
+    expect(isPlausibleWorkspacePath("styles.css")).toBe(true);
   });
 
   it("rejects envelopes with the wrong request id", () => {

@@ -1296,9 +1296,10 @@ function activityDetail(state: StepPanelState, phase: string | undefined): strin
 
 function renderPlans(history: PlanHistoryEntry[], activePlan: BuildrPlan | undefined, canRunPlan: boolean, running: boolean): string {
   const historical = history.map((entry, index) => renderPlanHistory(entry, index + 1)).join("");
-  const active = activePlan === undefined
-    ? `<section class="empty"><h2>No active plan</h2><p>Describe a task below to start.</p></section>`
-    : renderActivePlan(activePlan, history.length + 1, canRunPlan, running);
+  if (activePlan === undefined) {
+    return historical;
+  }
+  const active = renderActivePlan(activePlan, history.length + 1, canRunPlan, running);
   return `${historical}${active}`;
 }
 
@@ -1435,6 +1436,9 @@ function renderExecutionSection(state: StepPanelState): string {
     .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
     .join("");
   const activeStreamStep = renderActiveStreamStep(state.agentPipeline?.activeStream);
+  if (events.length === 0 && activeStreamStep.length === 0) {
+    return "";
+  }
   return `<section><h2>Execution</h2><ol>${events}${activeStreamStep}</ol></section>`;
 }
 

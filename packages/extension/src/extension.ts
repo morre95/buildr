@@ -406,6 +406,11 @@ function isPersistedAgentSession(value: unknown): value is PersistedAgentSession
     && (value as { state?: unknown }).state !== null;
 }
 
+function readExtensionVersion(context: vscode.ExtensionContext): string {
+  const version = (context.extension.packageJSON as { version?: unknown }).version;
+  return typeof version === "string" ? version : "";
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
   savedAgentSessions = loadSavedAgentSessions(context);
@@ -416,7 +421,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   const core = new BuildrCore();
-  const stepPanel = new StepPanel(context.extensionUri);
+  const stepPanel = new StepPanel(context.extensionUri, readExtensionVersion(context));
   const secretStore = new BuildrSecretStore(context.secrets);
   providerSecrets = secretStore;
   registerBuildrChatParticipant(context, core);

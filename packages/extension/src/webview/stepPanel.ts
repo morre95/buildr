@@ -108,7 +108,7 @@ export class StepPanel {
   private disposeHandler: (() => void) | undefined;
   private messageDisposable: vscode.Disposable | undefined;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(private readonly extensionUri: vscode.Uri, private readonly version: string = "") {}
 
   onApproval(handler: (message: ApprovalMessage) => void): void {
     this.approvalHandler = handler;
@@ -164,7 +164,7 @@ export class StepPanel {
       return;
     }
     if (created) {
-      this.panel.webview.html = renderState(state);
+      this.panel.webview.html = renderState(state, this.version);
     } else {
       void this.panel.webview.postMessage({
         type: "stateUpdate",
@@ -362,8 +362,9 @@ function renderStateSections(state: StepPanelState): StateSections {
   };
 }
 
-function renderState(state: StepPanelState): string {
+function renderState(state: StepPanelState, version = ""): string {
   const nonce = createNonce();
+  const versionBadge = version.length === 0 ? "" : `<span class="version-badge">v${escapeHtml(version)}</span>`;
   const execution = renderExecutionSection(state);
   const messages = state.messages
     .map((message) => `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><p>${escapeHtml(message.text)}</p></article>`)
@@ -440,6 +441,14 @@ function renderState(state: StepPanelState): string {
 
       h1 {
         font-size: 18px;
+      }
+
+      .version-badge {
+        margin-left: 6px;
+        font-size: 11px;
+        font-weight: 400;
+        vertical-align: middle;
+        color: var(--vscode-descriptionForeground);
       }
 
       h2 {
@@ -734,7 +743,7 @@ function renderState(state: StepPanelState): string {
     <main>
       <header>
         <div class="header-left">
-          <h1>Buildr</h1>
+          <h1>Buildr${versionBadge}</h1>
           ${model}
         </div>
         ${sessions}

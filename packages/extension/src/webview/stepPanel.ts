@@ -244,12 +244,6 @@ export class StepPanel {
     });
   }
 
-  postAgentStreamComplete(): void {
-    void this.panel?.webview.postMessage({
-      type: "agentStreamComplete"
-    });
-  }
-
   postEditPrompt(prompt: string): void {
     void this.panel?.webview.postMessage({
       type: "editPrompt",
@@ -853,6 +847,10 @@ function renderState(state: StepPanelState, version = ""): string {
       .stream-output {
         margin-top: 8px;
       }
+
+      details.execution-event summary {
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
@@ -1177,17 +1175,12 @@ function renderState(state: StepPanelState, version = ""): string {
         if (event.data?.type === "agentStreamStart") {
           setAgentStreamLabel(event.data.label ?? "Coder output");
           setAgentStreamRaw("");
-          setAgentStreamOpen(true);
           scrollContentToLatest();
           return;
         }
         if (event.data?.type === "agentStreamDelta") {
           appendAgentStreamRaw(event.data.content ?? "");
           scrollContentToLatest();
-          return;
-        }
-        if (event.data?.type === "agentStreamComplete") {
-          setAgentStreamOpen(false);
           return;
         }
         if (event.data?.type === "editPrompt") {
@@ -1241,13 +1234,6 @@ function renderState(state: StepPanelState, version = ""): string {
         if (el !== null) {
           el.textContent += content;
           el.scrollTop = el.scrollHeight;
-        }
-      }
-
-      function setAgentStreamOpen(open) {
-        const el = document.getElementById("agent-stream-details");
-        if (el !== null) {
-          el.open = open;
         }
       }
 
@@ -1713,9 +1699,7 @@ function renderAgentPipeline(agentPipeline: WebviewAgentPipelineState | undefine
 }
 
 function renderExecutionSection(state: StepPanelState): string {
-  const events = state.events
-    .map((event) => `<li><strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>${renderEvidence(event)}</li>`)
-    .join("");
+  const events = state.events.map(renderExecutionEvent).join("");
   const activeStreamStep = renderActiveStreamStep(state.agentPipeline?.activeStream);
   if (events.length === 0 && activeStreamStep.length === 0) {
     return "";
@@ -1723,19 +1707,32 @@ function renderExecutionSection(state: StepPanelState): string {
   return `<section><h2>Execution</h2><ol>${events}${activeStreamStep}</ol></section>`;
 }
 
+// A finished execution step: collapsed by default so the list stays scannable.
+// The heading (title/summary/status) is always visible; the evidence is the
+// foldable body. Steps with no evidence render as a plain line — nothing to fold.
+function renderExecutionEvent(event: ExecutionEvent): string {
+  const heading = `<strong>${escapeHtml(event.title)}</strong>: ${escapeHtml(event.summary)} <span>(${escapeHtml(event.status)})</span>`;
+  const evidence = renderEvidence(event);
+  if (evidence.length === 0) {
+    return `<li>${heading}</li>`;
+  }
+  return `<li><details class="execution-event"><summary>${heading}</summary>${evidence}</details></li>`;
+}
+
 // The currently-streaming agent step: shown as the last item in the Execution
-// list with its live raw output. Keeps the agent-stream-* element ids so the
-// incremental stream-delta handlers update it in place. Once the step finishes
-// (active === false) its completed event takes over and this item disappears.
+// list with its live raw output, always expanded (no fold) so the in-progress
+// step is fully visible. Keeps the agent-stream-* element ids so the incremental
+// stream-delta handlers update it in place. Once the step finishes (active ===
+// false) its completed event takes over and this item disappears.
 function renderActiveStreamStep(activeStream: WebviewAgentPipelineState["activeStream"]): string {
   if (activeStream === undefined || !activeStream.active) {
     return "";
   }
   return `<li class="execution-step stream-step">
-    <details id="agent-stream-details" class="stream-output" open>
-      <summary id="agent-stream-label">${escapeHtml(activeStream.label)}</summary>
+    <div class="stream-output">
+      <strong id="agent-stream-label">${escapeHtml(activeStream.label)}</strong>
       <pre id="agent-stream-raw">${escapeHtml(activeStream.raw)}</pre>
-    </details>
+    </div>
   </li>`;
 }
 

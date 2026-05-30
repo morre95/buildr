@@ -2452,7 +2452,6 @@ async function invokeStreamingJsonAgent<TData>(
     if (agentPipelineState?.activeStream !== undefined) {
       agentPipelineState.activeStream.active = false;
     }
-    stepPanel.postAgentStreamComplete();
   }
 }
 

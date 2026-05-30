@@ -102,10 +102,11 @@ let currentPlanMentionedFiles: string[] = [];
 let finalSummaryState: string | undefined;
 let contextWindowTokens: number | undefined;
 let contextWindowKey: string | undefined;
-// Estimated size of the most recent prompt actually sent to the model by the
-// agent pipeline. The chat transcript (`messages`) does not include agent
-// prompts, so without this the indicator under-reports during agent runs.
-let lastAgentContextTokens: number | undefined;
+// Estimated input/context-window size (in tokens) of the most recent prompt
+// actually sent to the model, across chat, ask, and agent paths. This is what
+// the context indicator reports — not the chat transcript, which only reflects
+// visible turns and tracks model output rather than the context window.
+let lastContextTokens: number | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let providerSecrets: BuildrSecretStore | undefined;
 let activeSessionId = "";
@@ -317,6 +318,7 @@ function restoreAgentSession(session: PersistedAgentSession): void {
   planHistory = [...session.state.planHistory];
   currentPlanWarnings = [...session.state.currentPlanWarnings];
   tokenBudgetState = session.state.tokenBudgetState;
+  lastContextTokens = undefined;
   currentPlanMentionedFiles = [...session.state.currentPlanMentionedFiles];
   finalSummaryState = session.state.finalSummary;
   agentPipelineState = session.state.agentPipelineState;
@@ -340,6 +342,7 @@ function resetAgentState(): void {
   planHistory = [];
   currentPlanWarnings = [];
   tokenBudgetState = undefined;
+  lastContextTokens = undefined;
   currentPlanMentionedFiles = [];
   finalSummaryState = undefined;
   agentPipelineState = undefined;
@@ -1140,6 +1143,8 @@ async function answerGeneralQuestion(question: string, fileMentions: string[], s
   for (let round = 0; round < 4; round += 1) {
     let roundText = "";
     const toolCalls: ToolCall[] = [];
+    lastContextTokens = estimateCoreContextTokens(modelMessages);
+    renderCurrentState(stepPanel);
     for await (const delta of configuredCore.model.chat({
       model: modelId,
       temperature: 0.2,
@@ -2472,7 +2477,7 @@ async function invokeAgentModel(
 ): Promise<string> {
   const configuredCore = createConfiguredCore();
   const modelId = getConfiguredModelId();
-  lastAgentContextTokens = estimateCoreContextTokens(messagesForModel);
+  lastContextTokens = estimateCoreContextTokens(messagesForModel);
   let rawResponse = "";
   for await (const delta of configuredCore.model.chat({
     model: modelId,
@@ -3355,11 +3360,10 @@ function estimateCoreContextTokens(msgs: CoreChatMessage[]): number {
 }
 
 function getContextSize(): { approxTokens: number; contextWindow?: number } {
-  // During an agent run the real context is the last agent prompt, not the chat
-  // transcript; fall back to the transcript for plain chat interactions.
-  const approxTokens = agentPipelineState !== undefined && lastAgentContextTokens !== undefined
-    ? lastAgentContextTokens
-    : estimateContextTokens(messages);
+  // Report the real prompt/context-window size sent on the last model call. Fall
+  // back to the transcript estimate only before any call has been made this
+  // session (e.g. a fresh, idle composer).
+  const approxTokens = lastContextTokens ?? estimateContextTokens(messages);
   return contextWindowTokens === undefined ? { approxTokens } : { approxTokens, contextWindow: contextWindowTokens };
 }
 

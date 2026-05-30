@@ -1350,12 +1350,20 @@ function renderContextSize(contextSize: StepPanelState["contextSize"]): string {
     return `<span class="context-size"></span>`;
   }
   const window = contextSize.contextWindow;
+  const used = formatTokenCount(contextSize.approxTokens);
   if (window === undefined || window <= 0) {
-    return `<span class="context-size">Context: ~${contextSize.approxTokens} tokens</span>`;
+    return `<span class="context-size">Context: ${used} tokens</span>`;
   }
   const percent = Math.round((contextSize.approxTokens / window) * 100);
-  const near = percent >= 90 ? " near-cap" : "";
-  return `<span class="context-size${near}">Context: ~${contextSize.approxTokens} tokens · ${percent}% of ${window}</span>`;
+  // Surface the percentage as the primary signal and nudge toward /compact as
+  // the window fills, so the user knows when to shrink the context.
+  const near = percent >= 70;
+  const hint = near ? " · /compact to shrink" : "";
+  return `<span class="context-size${percent >= 90 ? " near-cap" : ""}">Context: ${percent}% of ${formatTokenCount(window)} (${used} tokens)${hint}</span>`;
+}
+
+function formatTokenCount(tokens: number): string {
+  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
 }
 
 function renderTokenBudget(tokenBudget: TokenBudgetState | undefined): string {

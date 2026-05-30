@@ -38,7 +38,7 @@ export async function openBuildrSettings(): Promise<void> {
     return;
   }
 
-  const target = vscode.ConfigurationTarget.Workspace;
+  const target = vscode.ConfigurationTarget.Global;
   switch (choice) {
     case "Model provider":
       await updateChoice("buildr.model", "provider", ["ollama", "lmstudio-openai", "lmstudio-native", "openai", "openrouter", "anthropic", "openai-compatible"], target);

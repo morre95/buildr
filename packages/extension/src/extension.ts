@@ -557,7 +557,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
-      await config.update("provider", provider.value, vscode.ConfigurationTarget.Workspace);
+      await config.update("provider", provider.value, vscode.ConfigurationTarget.Global);
 
       const selectedProvider = parseProvider(provider.value);
       const urlKey = providerUrlSettingKey(selectedProvider);
@@ -575,7 +575,7 @@ export function activate(context: vscode.ExtensionContext): void {
       });
 
       if (nextUrl) {
-        await config.update(urlKey, stripProviderVersionSuffix(selectedProvider, nextUrl), vscode.ConfigurationTarget.Workspace);
+        await config.update(urlKey, stripProviderVersionSuffix(selectedProvider, nextUrl), vscode.ConfigurationTarget.Global);
       }
 
       if (!isLocalProvider(selectedProvider, stripProviderVersionSuffix(selectedProvider, nextUrl ?? currentUrl))) {
@@ -600,7 +600,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (modelId === undefined) {
         return;
       }
-      await config.update("modelId", modelId, vscode.ConfigurationTarget.Workspace);
+      await config.update("modelId", modelId, vscode.ConfigurationTarget.Global);
 
       vscode.window.showInformationMessage(`Buildr model set to ${provider.label}.`);
       void refreshContextWindow(stepPanel);
@@ -3487,7 +3487,7 @@ async function handleSelectModel(modelId: string, stepPanel: StepPanel): Promise
   if (trimmed.length === 0 || trimmed === getConfiguredModelId()) {
     return;
   }
-  await vscode.workspace.getConfiguration("buildr.model").update("modelId", trimmed, vscode.ConfigurationTarget.Workspace);
+  await vscode.workspace.getConfiguration("buildr.model").update("modelId", trimmed, vscode.ConfigurationTarget.Global);
   renderCurrentState(stepPanel);
   void refreshContextWindow(stepPanel);
 }

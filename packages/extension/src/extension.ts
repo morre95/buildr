@@ -476,6 +476,9 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(StepPanel.viewType, stepPanel, {
+      webviewOptions: { retainContextWhenHidden: true }
+    }),
     vscode.commands.registerCommand("buildr.openChat", () => {
       createNewAgentSession(stepPanel);
     }),

@@ -2,7 +2,7 @@
   "name": "buildr-vscode",
   "displayName": "Buildr",
   "description": "Local-model-first agentic coding workflows for VS Code.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "type": "module",
   "publisher": "buildr",
@@ -62,6 +62,24 @@
         "title": "Buildr: Debug"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "buildr",
+          "title": "Buildr",
+          "icon": "media/buildr-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "buildr": [
+        {
+          "id": "buildr.chatView",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
     "chatParticipants": [
       {
         "id": "buildr.chat",

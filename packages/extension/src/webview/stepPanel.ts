@@ -92,8 +92,10 @@ export interface WebviewAgentPipelineState {
   } | undefined;
 }
 
-export class StepPanel {
-  private panel: vscode.WebviewPanel | undefined;
+export class StepPanel implements vscode.WebviewViewProvider {
+  public static readonly viewType = "buildr.chatView";
+  private view: vscode.WebviewView | undefined;
+  private latestState: StepPanelState | undefined;
   private approvalHandler: ((message: ApprovalMessage) => void) | undefined;
   private promptHandler: ((message: PromptMessage) => void) | undefined;
   private fileSearchHandler: ((message: FileSearchMessage) => void) | undefined;
@@ -169,32 +171,31 @@ export class StepPanel {
   }
 
   showState(state: StepPanelState, options: { reveal?: boolean } = {}): void {
-    const created = this.ensurePanel();
-    if (this.panel === undefined) {
+    this.latestState = state;
+    if (this.view === undefined) {
+      if (options.reveal === true) {
+        void vscode.commands.executeCommand(`${StepPanel.viewType}.focus`);
+      }
       return;
     }
-    if (created) {
-      this.panel.webview.html = renderState(state, this.version);
-    } else {
-      void this.panel.webview.postMessage({
-        type: "stateUpdate",
-        sections: renderStateSections(state)
-      });
-    }
-    if (created || options.reveal === true) {
-      this.panel.reveal(vscode.ViewColumn.Beside);
+    void this.view.webview.postMessage({
+      type: "stateUpdate",
+      sections: renderStateSections(state)
+    });
+    if (options.reveal === true) {
+      this.view.show?.(true);
     }
   }
 
   postFileSearchResults(results: string[]): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "fileSearchResults",
       results
     });
   }
 
   postModelList(models: ModelInfo[], current: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "modelList",
       models,
       current
@@ -202,35 +203,35 @@ export class StepPanel {
   }
 
   postStreamStart(status: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "streamStart",
       status
     });
   }
 
   postStreamDelta(content: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "streamDelta",
       content
     });
   }
 
   postStreamComplete(status: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "streamComplete",
       status
     });
   }
 
   postStreamError(status: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "streamError",
       status
     });
   }
 
   postAgentStreamStart(role: string, label: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "agentStreamStart",
       role,
       label
@@ -238,39 +239,38 @@ export class StepPanel {
   }
 
   postAgentStreamDelta(content: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "agentStreamDelta",
       content
     });
   }
 
   postEditPrompt(prompt: string): void {
-    void this.panel?.webview.postMessage({
+    void this.view?.webview.postMessage({
       type: "editPrompt",
       prompt
     });
   }
 
-  private ensurePanel(): boolean {
-    let created = false;
-    if (this.panel === undefined) {
-      this.panel = vscode.window.createWebviewPanel(
-        "buildr.stepPanel",
-        "Buildr",
-        vscode.ViewColumn.Beside,
-        {
-          enableScripts: true,
-          localResourceRoots: [this.extensionUri]
-        }
-      );
-      created = true;
-    }
+  resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.view = webviewView;
+    webviewView.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [this.extensionUri]
+    };
+    this.wireMessages(webviewView.webview);
+    webviewView.onDidDispose(() => {
+      this.disposeHandler?.();
+      this.view = undefined;
+      this.messageDisposable?.dispose();
+      this.messageDisposable = undefined;
+    });
+    webviewView.webview.html = renderState(this.latestState ?? emptyState(), this.version);
+  }
 
-    if (this.messageDisposable !== undefined || this.panel === undefined) {
-      return created;
-    }
-
-    this.messageDisposable = this.panel.webview.onDidReceiveMessage((message: unknown) => {
+  private wireMessages(webview: vscode.Webview): void {
+    this.messageDisposable?.dispose();
+    this.messageDisposable = webview.onDidReceiveMessage((message: unknown) => {
       const approval = parseApprovalMessage(message);
       if (approval !== undefined) {
         this.approvalHandler?.(approval);
@@ -341,14 +341,17 @@ export class StepPanel {
         this.newSessionHandler?.();
       }
     });
-    this.panel.onDidDispose(() => {
-      this.disposeHandler?.();
-      this.panel = undefined;
-      this.messageDisposable?.dispose();
-      this.messageDisposable = undefined;
-    });
-    return created;
   }
+}
+
+function emptyState(): StepPanelState {
+  return {
+    planHistory: [],
+    events: [],
+    mode: "ask",
+    running: false,
+    messages: []
+  };
 }
 
 interface StateSections {

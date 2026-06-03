@@ -522,7 +522,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("buildr.configureModel", async () => {
       const config = vscode.workspace.getConfiguration("buildr.model");
-      const provider = await vscode.window.showQuickPick([
+      const currentProvider = config.get<string>("provider", "ollama");
+      const providerOptions = [
         {
           label: "Ollama",
           value: "ollama",
@@ -553,9 +554,23 @@ export function activate(context: vscode.ExtensionContext): void {
           value: "openai-compatible",
           description: "Uses OpenAI-compatible /v1/chat/completions"
         }
-      ], {
+      ];
+      const providerItems = await Promise.all(providerOptions.map(async (option) => {
+        const savedKey = await secretStore.getProviderSecret(providerSecretKey(parseProvider(option.value)));
+        const markers: string[] = [];
+        if (option.value === currentProvider) {
+          markers.push("current");
+        }
+        if (savedKey !== undefined && savedKey.length > 0) {
+          markers.push("API key saved");
+        }
+        return markers.length > 0
+          ? { ...option, detail: `$(check) ${markers.join(" · ")}` }
+          : { ...option };
+      }));
+      const provider = await vscode.window.showQuickPick(providerItems, {
         title: "Buildr: Model Provider",
-        placeHolder: `Current: ${config.get<string>("provider", "ollama")}`
+        placeHolder: `Current: ${currentProvider}`
       });
       if (provider === undefined) {
         return;
@@ -583,15 +598,35 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       if (!isLocalProvider(selectedProvider, stripProviderVersionSuffix(selectedProvider, nextUrl ?? currentUrl))) {
-        const secret = await vscode.window.showInputBox({
-          title: "Buildr: Provider API Key",
-          prompt: "API key for this cloud provider. Leave blank to keep an existing saved key.",
-          password: true,
-          ignoreFocusOut: true
-        });
-        if (secret !== undefined && secret.length > 0) {
-          await secretStore.storeProviderSecret(providerSecretKey(selectedProvider), secret);
-          vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
+        const existingKey = await secretStore.getProviderSecret(providerSecretKey(selectedProvider));
+        const hasExistingKey = existingKey !== undefined && existingKey.length > 0;
+        let shouldPromptForKey = true;
+        if (hasExistingKey) {
+          const keyChoice = await vscode.window.showQuickPick([
+            { label: "Keep existing API key", value: "keep" },
+            { label: "Replace API key", value: "replace" }
+          ], {
+            title: `Buildr: ${provider.label} API Key`,
+            placeHolder: `An API key is already configured for ${provider.label}. Change it?`
+          });
+          if (keyChoice === undefined) {
+            return;
+          }
+          shouldPromptForKey = keyChoice.value === "replace";
+        }
+        if (shouldPromptForKey) {
+          const secret = await vscode.window.showInputBox({
+            title: "Buildr: Provider API Key",
+            prompt: hasExistingKey
+              ? "Enter the new API key for this cloud provider. Leave blank to keep the existing saved key."
+              : "API key for this cloud provider.",
+            password: true,
+            ignoreFocusOut: true
+          });
+          if (secret !== undefined && secret.length > 0) {
+            await secretStore.storeProviderSecret(providerSecretKey(selectedProvider), secret);
+            vscode.window.showInformationMessage("Buildr stored provider secret in VS Code SecretStorage.");
+          }
         }
       }
 

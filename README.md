@@ -34,6 +34,23 @@ Because the Agent mode is verry slow. Normally it is minimum 5 LLM calls before 
 
 So minimum 3 LLM calls before the user even sees a patch and 5 total to see a final result. Therefor was the fast agent mode a nice thing to have to skip certain steps. The fast mode skips **architect**, **reviewer** and **tester** LLM passes to make it significant faster.
 
+## Command Palette
+
+All Buildr actions are available from the VS Code command palette (`Ctrl/Cmd+Shift+P`), prefixed with `Buildr:`.
+
+| Command | What it does |
+| --- | --- |
+| **Buildr: Open Chat** | Opens the Buildr chat panel in a fresh agent session. This is the main entry point for Ask, Plan, Agent, Fast agent, and Debug modes. |
+| **Buildr: Plan** | Prompts for a task description and generates a plan (Plan mode) without opening the chat first. The plan appears in the panel for review and approval. |
+| **Buildr: Run Approved Plan** | Executes the steps of the current plan through the agent workflow. Requires a trusted workspace and an existing plan; each proposed patch still goes through the approval flow. |
+| **Buildr: Configure Model** | Selects the model provider (Ollama, LM Studio, OpenAI, OpenRouter, Anthropic, OpenAI-compatible), its base URL, the model id, and stores any cloud API key in VS Code SecretStorage. Already-configured providers are marked, and re-selecting one asks whether to keep or replace the saved key. |
+| **Buildr: Open Settings** | Quick-pick editor for Buildr settings (provider, model id, base URLs, token budget/caps, parallel sub-agents, retry limit, costs, write/cloud policies, rule packs, verification level, embeddings) — or jumps to the native Settings UI. |
+| **Buildr: Index Workspace** | Builds and caches the workspace index used for plan context-gathering, reporting how many files were indexed. See [Workspace Indexing](#workspace-indexing). |
+| **Buildr: MCP List** | Opens a panel listing the MCP servers from `.vscode/mcp.json`, their status, the tools they expose with permission levels, and any warnings. See [MCP and Doctor](#mcp-and-doctor). |
+| **Buildr: Doctor** | Opens a panel with MCP health plus a remote-compatibility report (workspace trust, environment, reachable model endpoint) and any warnings. See [MCP and Doctor](#mcp-and-doctor). |
+| **Buildr: Debug** | Starts Debug Mode from a chosen input source — pasted log text, a log file, or the current VS Code Problems/diagnostics — and proposes ranked root-cause hypotheses. |
+| **Buildr: Stop** | Cancels the active Buildr operation (plan generation or agent execution). |
+
 ## Slash Commands
 
 The chat composer supports slash commands. Type `/` at the start of the input to open an autocomplete menu listing the available commands. Pick one from the menu (or finish typing it) and send.
@@ -53,6 +70,42 @@ The context window is detected per provider:
 - Other OpenAI-compatible endpoints fall back to the provider's recommended context size.
 
 The detected window is cached per provider/model, so it is resolved once and reused. If it cannot be determined, the badge shows the token count only, without a percentage.
+
+## Workspace Indexing
+
+When Buildr plans a task it gathers relevant code from the open folder to send to the model. It does this by building a **workspace index**: it walks the workspace, skips noise (`node_modules`, `.git`, `dist`, large files, etc.), and records each text/code file's path, extracted symbols (classes, functions, types…), and a short summary. Every file is passed through the context firewall first, so secrets are redacted before anything could reach a cloud model. Plan context-gathering then ranks the indexed files against your goal and includes the most relevant ones in the prompt.
+
+**Buildr: Index Workspace** builds this index on demand and caches it, reporting how many files were indexed (`Buildr indexed N file(s); context cache is warm.`). Running it is optional — plans build the index automatically — but pre-warming the cache means the next plan skips the full-tree scan.
+
+The cache is reused across plans and stays content-accurate: a file system watcher invalidates it the moment any workspace file is created, changed, or deleted, so the next plan (or a manual re-run of the command) rebuilds a fresh index. You never get stale context.
+
+## MCP and Doctor
+
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the standard way to expose external tool servers to an agent. Buildr discovers MCP servers from **`.vscode/mcp.json`** in the workspace — the same file VS Code itself uses. Each server entry defines a transport (`stdio`, `streamable-http`, or `sse`), a `command`/`args` or `url`, and optional `env`:
+
+```json
+{
+  "servers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    }
+  }
+}
+```
+
+**Buildr: MCP List** opens a panel showing, for the current workspace:
+
+- each configured **server** with its status and message,
+- each **tool** mapped from those servers, with its permission level,
+- any **warnings** (missing command/url, legacy SSE transport, env vars that may carry secrets, etc.).
+
+If no `.vscode/mcp.json` exists, the panel says so instead of failing.
+
+**Buildr: Doctor** opens a panel that adds health and environment checks on top of the MCP snapshot: an overall MCP health summary plus a **remote-compatibility report** covering workspace trust, the detected environment (local, WSL, remote-SSH, dev container, Codespaces, web), and whether the configured model endpoint is reachable from the extension host. Failing checks are listed with their severity. This is the first thing to run when Buildr behaves unexpectedly in a remote or restricted environment.
+
+Both commands render into a dedicated, reused webview panel so the output is readable and persistent rather than a transient notification.
 
 ## Commands
 

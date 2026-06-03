@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { BuildrPlan, ExecutionEvent, ModelInfo, PendingApproval, TokenBudgetState } from "@buildr/core";
+import { escapeHtml } from "./html.js";
 
 export type ApprovalDecision = "approve" | "deny";
 export type BuildrChatMode = "ask" | "plan" | "fast-agent" | "agent" | "debug";
@@ -1900,11 +1901,3 @@ function createNonce(): string {
   return value;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}

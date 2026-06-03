@@ -66,7 +66,7 @@ import { registerBuildrChatParticipant } from "./native/chatParticipant.js";
 import { runDebugFromInput } from "./native/debugMode.js";
 import { readDiagnosticsSummary } from "./native/diagnostics.js";
 import { registerBuildrLanguageModelTools } from "./native/languageModelTools.js";
-import { showMcpDoctor, showMcpList } from "./native/mcpCommands.js";
+import { showMcpDoctor, showMcpList, type ModelProviderStatus } from "./native/mcpCommands.js";
 import { openBuildrSettings } from "./native/settings.js";
 import { findTaskCommand, runCommandAsVscodeTask } from "./native/tasks.js";
 import {
@@ -669,7 +669,9 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage(`Buildr indexed ${index.files.length} file(s); context cache is warm.`);
     }),
     vscode.commands.registerCommand("buildr.mcpList", showMcpList),
-    vscode.commands.registerCommand("buildr.doctor", showMcpDoctor),
+    vscode.commands.registerCommand("buildr.doctor", async () => {
+      await showMcpDoctor(await getModelProviderStatus());
+    }),
     vscode.commands.registerCommand("buildr.debug", runDebugFromInput),
     vscode.commands.registerCommand("buildr.stop", () => {
       stopActiveOperation(stepPanel);
@@ -692,6 +694,19 @@ function getConfiguredProviderAndBaseUrl(): { provider: ProviderId; baseUrl: str
   const provider = parseProvider(modelConfig.get<string>("provider", "ollama"));
   const baseUrl = modelConfig.get<string>(providerUrlSettingKey(provider), defaultProviderBaseUrl(provider));
   return { provider, baseUrl };
+}
+
+async function getModelProviderStatus(): Promise<ModelProviderStatus> {
+  const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
+  const isCloud = !isLocalProvider(provider, baseUrl);
+  const secret = isCloud
+    ? await providerSecrets?.getProviderSecret(providerSecretKey(provider))
+    : undefined;
+  return {
+    provider,
+    isCloud,
+    hasApiKey: secret !== undefined && secret.length > 0
+  };
 }
 
 function getConfiguredModelId(): string {

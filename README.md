@@ -47,7 +47,7 @@ All Buildr actions are available from the VS Code command palette (`Ctrl/Cmd+Shi
 | **Buildr: Open Settings** | Quick-pick editor for Buildr settings (provider, model id, base URLs, token budget/caps, parallel sub-agents, retry limit, costs, write/cloud policies, rule packs, verification level, embeddings) — or jumps to the native Settings UI. |
 | **Buildr: Index Workspace** | Builds and caches the workspace index used for plan context-gathering, reporting how many files were indexed. See [Workspace Indexing](#workspace-indexing). |
 | **Buildr: MCP List** | Opens a panel listing the MCP servers from `.vscode/mcp.json`, their status, the tools they expose with permission levels, and any warnings. See [MCP and Doctor](#mcp-and-doctor). |
-| **Buildr: Doctor** | Opens a panel with MCP health plus a remote-compatibility report (workspace trust, environment, reachable model endpoint) and any warnings. See [MCP and Doctor](#mcp-and-doctor). |
+| **Buildr: Doctor** | Opens a panel with a model-provider check (warns if a cloud provider has no API key), MCP health, and a remote-compatibility report (workspace trust, environment, reachable model endpoint). See [MCP and Doctor](#mcp-and-doctor). |
 | **Buildr: Debug** | Starts Debug Mode from a chosen input source — pasted log text, a log file, or the current VS Code Problems/diagnostics — and proposes ranked root-cause hypotheses. |
 | **Buildr: Stop** | Cancels the active Buildr operation (plan generation or agent execution). |
 
@@ -110,7 +110,7 @@ If no `.vscode/mcp.json` exists, Buildr offers to create one from a set of prese
 | Docker MCP Toolkit | `docker mcp gateway run` (stdio) | Requires Docker Desktop with the MCP Toolkit enabled. |
 | Figma (Dev Mode MCP) | `http://127.0.0.1:3845/mcp` (http) | Enable the Dev Mode MCP server in the Figma desktop app first. |
 
-**Buildr: Doctor** opens a panel that adds health and environment checks on top of the MCP snapshot: an overall MCP health summary plus a **remote-compatibility report** covering workspace trust, the detected environment (local, WSL, remote-SSH, dev container, Codespaces, web), and whether the configured model endpoint is reachable from the extension host. Failing checks are listed with their severity. This is the first thing to run when Buildr behaves unexpectedly in a remote or restricted environment.
+**Buildr: Doctor** opens a panel that adds health and environment checks on top of the MCP snapshot: a **model provider** check, an overall MCP health summary, and a **remote-compatibility report** covering workspace trust, the detected environment (local, WSL, remote-SSH, dev container, Codespaces, web), and whether the configured model endpoint is reachable from the extension host. The model provider check flags when a cloud provider is selected but no API key is stored — both in the panel and as a notice — so you know to run **Buildr: Configure Model**. Local providers report that no key is required. Failing checks are listed with their severity. This is the first thing to run when Buildr behaves unexpectedly in a remote or restricted environment.
 
 Both commands render into a dedicated, reused webview panel so the output is readable and persistent rather than a transient notification.
 

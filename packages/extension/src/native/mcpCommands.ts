@@ -36,7 +36,13 @@ export async function showMcpList(): Promise<void> {
   showMcpWebview("Buildr: MCP Servers", body);
 }
 
-export async function showMcpDoctor(): Promise<void> {
+export interface ModelProviderStatus {
+  provider: string;
+  isCloud: boolean;
+  hasApiKey: boolean;
+}
+
+export async function showMcpDoctor(providerStatus?: ModelProviderStatus): Promise<void> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (root === undefined) {
     vscode.window.showWarningMessage("Open a workspace folder before running MCP doctor.");
@@ -57,6 +63,7 @@ export async function showMcpDoctor(): Promise<void> {
 
   const body = [
     `<p class="subtitle">Source: <code>${escapeHtml(config.path)}</code></p>`,
+    renderProviderStatus(providerStatus),
     `<h2>MCP health</h2>`,
     `<p><span class="status ${result.ok ? "status-ok" : "status-error"}">${result.ok ? "OK" : "Issues found"}</span> — ${escapeHtml(result.summary)}</p>`,
     renderWarnings(result.warnings),
@@ -65,6 +72,25 @@ export async function showMcpDoctor(): Promise<void> {
     renderRemoteChecks(remote.checks)
   ].join("\n");
   showMcpWebview("Buildr: MCP Doctor", body);
+
+  if (providerStatus?.isCloud === true && !providerStatus.hasApiKey) {
+    vscode.window.showWarningMessage(
+      `Buildr: no API key configured for the cloud provider "${providerStatus.provider}". Run Buildr: Configure Model to store one.`
+    );
+  }
+}
+
+function renderProviderStatus(status: ModelProviderStatus | undefined): string {
+  if (status === undefined) {
+    return "";
+  }
+  if (!status.isCloud) {
+    return `<h2>Model provider</h2><p><span class="status status-ok">local</span> <code>${escapeHtml(status.provider)}</code> — no API key required.</p>`;
+  }
+  if (status.hasApiKey) {
+    return `<h2>Model provider</h2><p><span class="status status-ok">cloud</span> <code>${escapeHtml(status.provider)}</code> — API key saved.</p>`;
+  }
+  return `<h2>Model provider</h2><p><span class="status status-error">cloud</span> <code>${escapeHtml(status.provider)}</code> — no API key configured. Run <strong>Buildr: Configure Model</strong> to store one.</p>`;
 }
 
 function renderServers(servers: McpServerHealth[]): string {

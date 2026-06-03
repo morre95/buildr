@@ -2,7 +2,7 @@
   "name": "buildr-vscode",
   "displayName": "Buildr",
   "description": "Local-model-first agentic coding workflows for VS Code.",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "type": "module",
   "publisher": "buildr",

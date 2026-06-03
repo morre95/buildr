@@ -54,7 +54,8 @@ import {
   type ToolDefinition,
   type ToolResult,
   type TokenBudgetConfig,
-  type TokenBudgetState
+  type TokenBudgetState,
+  type WorkspaceIndex
 } from "@buildr/core";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
@@ -111,6 +112,10 @@ let contextWindowKey: string | undefined;
 let lastContextTokens: number | undefined;
 let extensionContext: vscode.ExtensionContext | undefined;
 let providerSecrets: BuildrSecretStore | undefined;
+// Cached workspace index, reused across plans so context-gathering does not
+// rebuild the whole tree every time. A file system watcher invalidates it the
+// moment any workspace file changes, so the cache is always content-accurate.
+let workspaceIndexCache: { root: string; index: WorkspaceIndex } | undefined;
 // Per-session cache of provider models for the webview picker, keyed by
 // provider|baseUrl so switching providers fetches a fresh list without a
 // repeated network round-trip (or progress popup) each time the picker opens.
@@ -475,7 +480,16 @@ export function activate(context: vscode.ExtensionContext): void {
     persistActiveAgentSession();
   });
 
+  const workspaceWatcher = vscode.workspace.createFileSystemWatcher("**/*");
+  const invalidateWorkspaceIndex = (): void => {
+    workspaceIndexCache = undefined;
+  };
+  workspaceWatcher.onDidChange(invalidateWorkspaceIndex);
+  workspaceWatcher.onDidCreate(invalidateWorkspaceIndex);
+  workspaceWatcher.onDidDelete(invalidateWorkspaceIndex);
+
   context.subscriptions.push(
+    workspaceWatcher,
     vscode.window.registerWebviewViewProvider(StepPanel.viewType, stepPanel, {
       webviewOptions: { retainContextWhenHidden: true }
     }),
@@ -651,8 +665,8 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showWarningMessage("Open a workspace folder before indexing.");
         return;
       }
-      const index = await buildWorkspaceIndex(root);
-      vscode.window.showInformationMessage(`Buildr indexed ${index.files.length} file(s).`);
+      const index = await getWorkspaceIndex(root, true);
+      vscode.window.showInformationMessage(`Buildr indexed ${index.files.length} file(s); context cache is warm.`);
     }),
     vscode.commands.registerCommand("buildr.mcpList", showMcpList),
     vscode.commands.registerCommand("buildr.doctor", showMcpDoctor),
@@ -1432,6 +1446,18 @@ function failedToolResult(summary: string, source: string): ToolResult {
   };
 }
 
+// Returns the cached workspace index when it covers the current root, otherwise
+// builds a fresh one and caches it. Pass forceRefresh to rebuild unconditionally
+// (used by the Index Workspace command to warm the cache on demand).
+async function getWorkspaceIndex(root: string, forceRefresh = false): Promise<WorkspaceIndex> {
+  if (!forceRefresh && workspaceIndexCache?.root === root) {
+    return workspaceIndexCache.index;
+  }
+  const index = await buildWorkspaceIndex(root);
+  workspaceIndexCache = { root, index };
+  return index;
+}
+
 async function createWorkspaceContextSummary(goal: string, mentionedFiles: string[] = []): Promise<WorkspaceContextSummary> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (root === undefined) {
@@ -1444,7 +1470,7 @@ async function createWorkspaceContextSummary(goal: string, mentionedFiles: strin
     };
   }
   try {
-    const index = await buildWorkspaceIndex(root);
+    const index = await getWorkspaceIndex(root);
     const ranked = rankWorkspaceContext(index, goal, 8);
     const mentioned = await loadMentionedFileContext(root, mentionedFiles, index.files);
     const compressed = compressRankedContext(ranked, 3000);

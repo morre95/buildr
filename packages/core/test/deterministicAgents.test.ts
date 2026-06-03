@@ -3,6 +3,7 @@ import {
   applyAgentFileDiff,
   createTextPatchFromAgentDiff,
   createCoderMessages,
+  createReviewerMessages,
   createTesterMessages,
   formatTextPatchAsGitDiff,
   hashText,
@@ -52,6 +53,47 @@ describe("deterministic agent contracts", () => {
         "Keep changes scoped."
       ]
     });
+  });
+
+  it("scopes the reviewer to the assigned task and lists deferred work", () => {
+    const messages = createReviewerMessages({
+      requestId: "reviewer:1",
+      task: {
+        id: "t1",
+        title: "Implement snake game",
+        instructions: "Create the playable snake game.",
+        targetFiles: ["snake.py"],
+        dependsOn: [],
+        acceptanceCriteria: ["Game runs."]
+      },
+      coderOutput: { summary: "Added snake.py", diffs: [] },
+      deferredWork: [{ id: "t2", title: "Write README", targetFiles: ["README.md"] }]
+    });
+
+    const system = messages.find((message) => message.role === "system")?.content ?? "";
+    expect(system).toContain("assigned task only");
+    expect(system).toContain("deferredWork");
+
+    const payload = JSON.parse(messages.find((message) => message.role === "user")?.content ?? "{}");
+    expect(payload.deferredWork).toEqual([{ id: "t2", title: "Write README", targetFiles: ["README.md"] }]);
+  });
+
+  it("defaults reviewer deferred work to an empty list", () => {
+    const messages = createReviewerMessages({
+      requestId: "reviewer:1",
+      task: {
+        id: "t1",
+        title: "Implement snake game",
+        instructions: "Create the playable snake game.",
+        targetFiles: ["snake.py"],
+        dependsOn: [],
+        acceptanceCriteria: ["Game runs."]
+      },
+      coderOutput: { summary: "Added snake.py", diffs: [] }
+    });
+
+    const payload = JSON.parse(messages.find((message) => message.role === "user")?.content ?? "{}");
+    expect(payload.deferredWork).toEqual([]);
   });
 
   it("rejects architect target files that are descriptions instead of paths", () => {

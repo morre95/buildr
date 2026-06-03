@@ -2195,10 +2195,14 @@ async function runCoderReviewLoop(
     }
 
     agentPipelineState.phase = "reviewing";
+    const deferredWork = (agentPipelineState.plan?.tasks ?? [])
+      .filter((other) => other.id !== task.id)
+      .map((other) => ({ id: other.id, title: other.title, targetFiles: other.targetFiles }));
     const reviewer = await invokeStreamingJsonAgent("reviewer", `Reviewer: ${task.title} (attempt ${attempt})`, createReviewerMessages({
       requestId: createAgentRequestId("reviewer"),
       task,
-      coderOutput: coder.data
+      coderOutput: coder.data,
+      deferredWork
     }), validateReviewerOutput, stepPanel);
     const issues = reviewer.data.status === "changes_needed" ? reviewer.data.issues : [];
     agentPipelineState.reviewResults.push({

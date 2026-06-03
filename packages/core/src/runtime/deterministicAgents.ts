@@ -92,8 +92,8 @@ export interface TesterOutput {
 
 export const REVIEWER_RUBRIC = [
   "Correctness: the diff implements the assigned task without unrelated behavior changes.",
-  "Style: the diff follows the existing project style and keeps changes scoped.",
-  "Tests present: the change includes or requests appropriate verification for the task."
+  "Style: the diff follows the existing project style and keeps changes scoped to this task.",
+  "Tests: only when this task's instructions, targetFiles, or acceptanceCriteria call for tests — do not demand verification artifacts that belong to another step."
 ].join("\n");
 
 export function resolveCoderRetryLimit(configuredLimit: unknown, isLocalModel: boolean): number {
@@ -230,13 +230,24 @@ export function createCoderMessages(options: {
   ], options.input);
 }
 
+/** A sibling plan task whose deliverables are owned by a different step. */
+export interface DeferredTask {
+  id: string;
+  title: string;
+  targetFiles: string[];
+}
+
 export function createReviewerMessages(options: {
   requestId: string;
   task: AgentPlanTask;
   coderOutput: CoderOutput;
+  deferredWork?: DeferredTask[];
 }): ChatMessage[] {
   return createAgentMessages("reviewer", options.requestId, [
-    "Review the coder diff against the original task and fixed rubric.",
+    "Review the coder diff against the assigned task only, not the overall goal.",
+    "Evaluate the diff solely against this task's instructions, targetFiles, and acceptanceCriteria.",
+    "deferredWork lists deliverables owned by other steps. Never raise issues for files or features listed there (e.g. a README, tests, or other modules) — they are implemented in their own steps.",
+    "Only return changes_needed for defects in the files this task targets.",
     "Return only { status: 'approved' } or { status: 'changes_needed', issues: [{ category, message }] }.",
     "Each issue is an object whose category is one of correctness, style, or tests, and whose message is a single string.",
     "Do not decide routing, retries, testing, approval, or completion.",
@@ -245,7 +256,8 @@ export function createReviewerMessages(options: {
     REVIEWER_RUBRIC
   ], {
     task: options.task,
-    coderOutput: options.coderOutput
+    coderOutput: options.coderOutput,
+    deferredWork: options.deferredWork ?? []
   });
 }
 

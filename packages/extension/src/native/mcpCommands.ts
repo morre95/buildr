@@ -36,10 +36,19 @@ export async function showMcpList(): Promise<void> {
   showMcpWebview("Buildr: MCP Servers", body);
 }
 
-export interface ModelProviderStatus {
+export interface ProviderStatusEntry {
   provider: string;
-  isCloud: boolean;
-  hasApiKey: boolean;
+  kind: "cloud" | "local";
+  /** Cloud: an API key is stored. Local: the server is reachable. */
+  configured: boolean;
+  /** Whether this is the currently selected provider. */
+  active: boolean;
+  detail: string;
+}
+
+export interface ModelProviderStatus {
+  active: string;
+  entries: ProviderStatusEntry[];
 }
 
 export async function showMcpDoctor(providerStatus?: ModelProviderStatus): Promise<void> {
@@ -73,9 +82,40 @@ export async function showMcpDoctor(providerStatus?: ModelProviderStatus): Promi
   ].join("\n");
   showMcpWebview("Buildr: MCP Doctor", body);
 
-  if (providerStatus?.isCloud === true && !providerStatus.hasApiKey) {
+  if (providerStatus !== undefined) {
+    notifyProviderStatus(providerStatus);
+  }
+}
+
+function hasConfiguredCloud(status: ModelProviderStatus): boolean {
+  return status.entries.some((entry) => entry.kind === "cloud" && entry.configured);
+}
+
+function hasRunningLocal(status: ModelProviderStatus): boolean {
+  return status.entries.some((entry) => entry.kind === "local" && entry.configured);
+}
+
+function notifyProviderStatus(status: ModelProviderStatus): void {
+  const cloud = hasConfiguredCloud(status);
+  const local = hasRunningLocal(status);
+  if (!cloud && !local) {
     vscode.window.showWarningMessage(
-      `Buildr: no API key configured for the cloud provider "${providerStatus.provider}". Run Buildr: Configure Model to store one.`
+      "Buildr: no models to run — no cloud provider has an API key and no local provider is running. The extension is unusable until you add one. Run Buildr: Configure Model."
+    );
+    return;
+  }
+
+  const active = status.entries.find((entry) => entry.active);
+  if (active?.kind === "cloud" && !active.configured) {
+    vscode.window.showWarningMessage(
+      `Buildr: no API key configured for the active cloud provider "${active.provider}". Run Buildr: Configure Model to store one.`
+    );
+    return;
+  }
+
+  if (cloud && !local) {
+    vscode.window.showInformationMessage(
+      "Buildr: only cloud providers are configured; no local provider is running."
     );
   }
 }
@@ -84,13 +124,32 @@ function renderProviderStatus(status: ModelProviderStatus | undefined): string {
   if (status === undefined) {
     return "";
   }
-  if (!status.isCloud) {
-    return `<h2>Model provider</h2><p><span class="status status-ok">local</span> <code>${escapeHtml(status.provider)}</code> — no API key required.</p>`;
+
+  const list = status.entries.length === 0
+    ? `<p class="empty">No model providers configured.</p>`
+    : `<ul>${status.entries.map(renderProviderEntry).join("\n")}</ul>`;
+
+  return [
+    `<h2>Model providers</h2>`,
+    list,
+    renderProviderAdvisory(hasConfiguredCloud(status), hasRunningLocal(status))
+  ].join("\n");
+}
+
+function renderProviderEntry(entry: ProviderStatusEntry): string {
+  const statusClass = entry.configured ? "status-ok" : "status-error";
+  const activeMarker = entry.active ? " <strong>(active)</strong>" : "";
+  return `<li><span class="status ${statusClass}">${entry.kind}</span> <code>${escapeHtml(entry.provider)}</code>${activeMarker} — ${escapeHtml(entry.detail)}</li>`;
+}
+
+function renderProviderAdvisory(cloud: boolean, local: boolean): string {
+  if (!cloud && !local) {
+    return `<p class="status-error"><strong>No models to run.</strong> No cloud provider is configured and no local provider is running, so Buildr cannot run any model — the extension is unusable. Run <strong>Buildr: Configure Model</strong> to add a provider.</p>`;
   }
-  if (status.hasApiKey) {
-    return `<h2>Model provider</h2><p><span class="status status-ok">cloud</span> <code>${escapeHtml(status.provider)}</code> — API key saved.</p>`;
+  if (cloud && !local) {
+    return `<p class="status-warn">Only cloud providers are configured. No local provider is running, so every request will be sent to a cloud provider.</p>`;
   }
-  return `<h2>Model provider</h2><p><span class="status status-error">cloud</span> <code>${escapeHtml(status.provider)}</code> — no API key configured. Run <strong>Buildr: Configure Model</strong> to store one.</p>`;
+  return "";
 }
 
 function renderServers(servers: McpServerHealth[]): string {

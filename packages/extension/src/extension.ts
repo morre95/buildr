@@ -66,7 +66,7 @@ import { registerBuildrChatParticipant } from "./native/chatParticipant.js";
 import { runDebugFromInput } from "./native/debugMode.js";
 import { readDiagnosticsSummary } from "./native/diagnostics.js";
 import { registerBuildrLanguageModelTools } from "./native/languageModelTools.js";
-import { showMcpDoctor, showMcpList, type ModelProviderStatus } from "./native/mcpCommands.js";
+import { showMcpDoctor, showMcpList, type ModelProviderStatus, type ProviderStatusEntry } from "./native/mcpCommands.js";
 import { openBuildrSettings } from "./native/settings.js";
 import { findTaskCommand, runCommandAsVscodeTask } from "./native/tasks.js";
 import {
@@ -689,24 +689,102 @@ function createConfiguredCore(): BuildrCore {
   return new BuildrCore({ model });
 }
 
-function getConfiguredProviderAndBaseUrl(): { provider: ProviderId; baseUrl: string } {
+function getProviderBaseUrl(provider: ProviderId): string {
   const modelConfig = vscode.workspace.getConfiguration("buildr.model");
-  const provider = parseProvider(modelConfig.get<string>("provider", "ollama"));
-  const baseUrl = modelConfig.get<string>(providerUrlSettingKey(provider), defaultProviderBaseUrl(provider));
-  return { provider, baseUrl };
+  return modelConfig.get<string>(providerUrlSettingKey(provider), defaultProviderBaseUrl(provider));
 }
 
+function getConfiguredProviderAndBaseUrl(): { provider: ProviderId; baseUrl: string } {
+  const provider = parseProvider(vscode.workspace.getConfiguration("buildr.model").get<string>("provider", "ollama"));
+  return { provider, baseUrl: getProviderBaseUrl(provider) };
+}
+
+const KNOWN_PROVIDERS: ProviderId[] = [
+  "ollama",
+  "lmstudio-openai",
+  "lmstudio-native",
+  "openai-compatible",
+  "openai",
+  "openrouter",
+  "anthropic"
+];
+
 async function getModelProviderStatus(): Promise<ModelProviderStatus> {
-  const { provider, baseUrl } = getConfiguredProviderAndBaseUrl();
-  const isCloud = !isLocalProvider(provider, baseUrl);
-  const secret = isCloud
-    ? await providerSecrets?.getProviderSecret(providerSecretKey(provider))
-    : undefined;
+  const { provider: activeProvider } = getConfiguredProviderAndBaseUrl();
+  const reachability = new Map<string, Promise<boolean>>();
+  const localUrlEntry = new Map<string, number>();
+  const entries: ProviderStatusEntry[] = [];
+
+  for (const provider of KNOWN_PROVIDERS) {
+    const baseUrl = getProviderBaseUrl(provider);
+    const active = provider === activeProvider;
+
+    if (isLocalProvider(provider, baseUrl)) {
+      let pending = reachability.get(baseUrl);
+      if (pending === undefined) {
+        pending = isLocalProviderReachable(baseUrl);
+        reachability.set(baseUrl, pending);
+      }
+      const running = await pending;
+
+      // Several local provider integrations can share one server URL — list each
+      // distinct server once, preferring the active provider's id for the label.
+      const existingIndex = localUrlEntry.get(baseUrl);
+      if (existingIndex !== undefined) {
+        if (active) {
+          entries[existingIndex] = makeLocalEntry(provider, baseUrl, running, true);
+        }
+        continue;
+      }
+      if (running || active) {
+        localUrlEntry.set(baseUrl, entries.length);
+        entries.push(makeLocalEntry(provider, baseUrl, running, active));
+      }
+      continue;
+    }
+
+    const hasApiKey = await hasStoredApiKey(provider);
+    if (hasApiKey || active) {
+      entries.push({
+        provider,
+        kind: "cloud",
+        configured: hasApiKey,
+        active,
+        detail: hasApiKey ? "API key saved." : "no API key configured."
+      });
+    }
+  }
+
+  return { active: activeProvider, entries };
+}
+
+function makeLocalEntry(provider: ProviderId, baseUrl: string, running: boolean, active: boolean): ProviderStatusEntry {
   return {
     provider,
-    isCloud,
-    hasApiKey: secret !== undefined && secret.length > 0
+    kind: "local",
+    configured: running,
+    active,
+    detail: running ? `running at ${baseUrl}` : `not reachable at ${baseUrl}`
   };
+}
+
+async function hasStoredApiKey(provider: ProviderId): Promise<boolean> {
+  const secret = await providerSecrets?.getProviderSecret(providerSecretKey(provider));
+  return secret !== undefined && secret.length > 0;
+}
+
+async function isLocalProviderReachable(baseUrl: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    // Any HTTP response (even a 404) means the local server is up and listening.
+    await fetch(baseUrl, { signal: controller.signal });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getConfiguredModelId(): string {

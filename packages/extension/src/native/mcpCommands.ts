@@ -3,20 +3,26 @@ import {
   createMcpRegistrySnapshot,
   loadWorkspaceMcpConfig,
   runMcpDoctor,
-  type McpRegistrySnapshot,
   type McpServerHealth,
   type RemoteCompatibilityCheck,
   type ToolDefinition
 } from "@buildr/core";
+import { join } from "node:path";
 import * as vscode from "vscode";
 import { escapeHtml } from "../webview/html.js";
 import { showMcpWebview } from "./mcpPanel.js";
+import { fileExists, offerToCreateMcpConfig } from "./mcpTemplates.js";
 
 export async function showMcpList(): Promise<void> {
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (root === undefined) {
     vscode.window.showWarningMessage("Open a workspace folder before listing MCP servers.");
     return;
+  }
+
+  const mcpPath = join(root, ".vscode", "mcp.json");
+  if (!(await fileExists(mcpPath))) {
+    await offerToCreateMcpConfig(mcpPath);
   }
 
   const config = await loadWorkspaceMcpConfig(root);

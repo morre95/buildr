@@ -101,7 +101,14 @@ The cache is reused across plans and stays content-accurate: a file system watch
 - each **tool** mapped from those servers, with its permission level,
 - any **warnings** (missing command/url, legacy SSE transport, env vars that may carry secrets, etc.).
 
-If no `.vscode/mcp.json` exists, the panel says so instead of failing.
+If no `.vscode/mcp.json` exists, Buildr offers to create one from a set of presets — **Playwright**, **GitHub**, **Docker MCP Toolkit**, and **Figma (Dev Mode MCP)**. Pick the servers you want and Buildr writes a valid `.vscode/mcp.json` (creating the `.vscode` folder if needed) and opens it for review. No secrets are written to the file: the GitHub preset uses a VS Code `${input:...}` prompt, so VS Code asks for your Personal Access Token when the server starts. The preset configs follow each server's official setup docs:
+
+| Preset | Transport | Notes |
+| --- | --- | --- |
+| Playwright | `npx @playwright/mcp@latest` (stdio) | No credentials required. |
+| GitHub | `https://api.githubcopilot.com/mcp/` (http) | Prompts for a Personal Access Token. |
+| Docker MCP Toolkit | `docker mcp gateway run` (stdio) | Requires Docker Desktop with the MCP Toolkit enabled. |
+| Figma (Dev Mode MCP) | `http://127.0.0.1:3845/mcp` (http) | Enable the Dev Mode MCP server in the Figma desktop app first. |
 
 **Buildr: Doctor** opens a panel that adds health and environment checks on top of the MCP snapshot: an overall MCP health summary plus a **remote-compatibility report** covering workspace trust, the detected environment (local, WSL, remote-SSH, dev container, Codespaces, web), and whether the configured model endpoint is reachable from the extension host. Failing checks are listed with their severity. This is the first thing to run when Buildr behaves unexpectedly in a remote or restricted environment.
 

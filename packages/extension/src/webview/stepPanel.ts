@@ -379,6 +379,35 @@ function renderMessage(message: ChatMessage): string {
   return `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><div class="message-body">${body}</div></article>`;
 }
 
+interface ContentParts {
+  messages: string;
+  tokenBudget: string;
+  agentPipeline: string;
+  stream: string;
+  plan: string;
+  execution: string;
+  pending: string;
+  finalSummary: string;
+}
+
+// Ask and Debug deliver their result as a chat message, so the transcript holds
+// the newest output and belongs at the bottom, nearest the composer. Plan and
+// agent modes put their result — and live streaming — in the panels, which stay
+// at the bottom so progress renders next to the input and auto-scroll keeps it
+// in view.
+function transcriptHoldsResult(mode: BuildrChatMode): boolean {
+  return mode === "ask" || mode === "debug";
+}
+
+// Single source of truth for content ordering, shared by the full-page render
+// and the incremental update so the two never drift.
+function composeContent(parts: ContentParts, mode: BuildrChatMode): string {
+  const panels = `${parts.tokenBudget}${parts.agentPipeline}${parts.stream}${parts.plan}${parts.execution}${parts.pending}${parts.finalSummary}`;
+  return transcriptHoldsResult(mode)
+    ? `${panels}${parts.messages}`
+    : `${parts.messages}${panels}`;
+}
+
 function renderStateSections(state: StepPanelState): StateSections {
   const execution = renderExecutionSection(state);
   const messages = renderMessages(state.messages);
@@ -391,7 +420,10 @@ function renderStateSections(state: StepPanelState): StateSections {
   const plan = renderPlans(state.planHistory, state.plan, canRunPlan, state.running);
 
   return {
-    content: `${messages}${tokenBudget}${agentPipeline}${stream}${plan}${execution}${pending}${finalSummary}`,
+    content: composeContent(
+      { messages, tokenBudget, agentPipeline, stream, plan, execution, pending, finalSummary },
+      state.mode
+    ),
     activity: renderActivity(state),
     running: state.running,
     mode: state.mode,
@@ -418,6 +450,10 @@ function renderState(state: StepPanelState, version = ""): string {
   const sessions = renderSessionControls(state.sessions ?? [], state.activeSessionId);
   const model = renderModelState(state.model);
   const contextSize = renderContextSize(state.contextSize);
+  const content = composeContent(
+    { messages, tokenBudget, agentPipeline, stream, plan, execution, pending, finalSummary },
+    state.mode
+  );
 
   return `<!doctype html>
 <html lang="en">
@@ -904,14 +940,7 @@ function renderState(state: StepPanelState, version = ""): string {
         ${sessions}
       </header>
       <div class="content">
-        ${messages}
-        ${tokenBudget}
-        ${agentPipeline}
-        ${stream}
-        ${plan}
-        ${execution}
-        ${pending}
-        ${finalSummary}
+        ${content}
       </div>
       <form class="composer" id="composer">
         ${activity}

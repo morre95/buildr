@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { BuildrPlan, ExecutionEvent, ModelInfo, PendingApproval, TokenBudgetState } from "@buildr/core";
-import { escapeHtml } from "./html.js";
+import { escapeHtml, renderMarkdown } from "./html.js";
 
 export type ApprovalDecision = "approve" | "deny";
 export type BuildrChatMode = "ask" | "plan" | "fast-agent" | "agent" | "debug";
@@ -366,11 +366,22 @@ interface StateSections {
   sessions: string;
 }
 
+function renderMessages(messages: ChatMessage[]): string {
+  return messages.map(renderMessage).join("");
+}
+
+function renderMessage(message: ChatMessage): string {
+  // Assistant replies are LLM output rendered as markdown; user/system text is
+  // plain and only needs escaping.
+  const body = message.role === "assistant"
+    ? renderMarkdown(message.text)
+    : `<p>${escapeHtml(message.text)}</p>`;
+  return `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><div class="message-body">${body}</div></article>`;
+}
+
 function renderStateSections(state: StepPanelState): StateSections {
   const execution = renderExecutionSection(state);
-  const messages = state.messages
-    .map((message) => `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><p>${escapeHtml(message.text)}</p></article>`)
-    .join("");
+  const messages = renderMessages(state.messages);
   const pending = state.pendingApproval === undefined ? "" : renderPendingApproval(state.pendingApproval);
   const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
   const stream = renderStream(state.stream);
@@ -395,9 +406,7 @@ function renderState(state: StepPanelState, version = ""): string {
   const nonce = createNonce();
   const versionBadge = version.length === 0 ? "" : `<span class="version-badge">v${escapeHtml(version)}</span>`;
   const execution = renderExecutionSection(state);
-  const messages = state.messages
-    .map((message) => `<article class="message ${escapeHtml(message.role)}"><strong>${escapeHtml(message.role)}</strong><p>${escapeHtml(message.text)}</p></article>`)
-    .join("");
+  const messages = renderMessages(state.messages);
   const pending = state.pendingApproval === undefined ? "" : renderPendingApproval(state.pendingApproval);
   const finalSummary = state.finalSummary === undefined ? "" : `<section><h2>Final Report</h2><p>${escapeHtml(state.finalSummary)}</p></section>`;
   const activity = renderActivity(state);
@@ -564,6 +573,34 @@ function renderState(state: StepPanelState, version = ""): string {
         margin-bottom: 4px;
         color: var(--vscode-descriptionForeground);
         text-transform: capitalize;
+      }
+
+      .message-body > :first-child {
+        margin-top: 0;
+      }
+
+      .message-body > :last-child {
+        margin-bottom: 0;
+      }
+
+      .message-body p {
+        margin: 8px 0;
+      }
+
+      .message-body code {
+        padding: 1px 4px;
+        border-radius: 4px;
+        background: var(--vscode-textCodeBlock-background);
+        font-family: var(--vscode-editor-font-family, monospace);
+      }
+
+      .message-body pre code {
+        padding: 0;
+        background: none;
+      }
+
+      .message-body a {
+        color: var(--vscode-textLink-foreground);
       }
 
       ol {

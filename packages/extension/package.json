@@ -2,7 +2,7 @@
   "name": "buildr-vscode",
   "displayName": "Buildr",
   "description": "Local-model-first agentic coding workflows for VS Code.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "type": "module",
   "publisher": "buildr",
@@ -241,9 +241,11 @@
     "package": "XDG_CACHE_HOME=../../.pnpm-cache pnpm dlx @vscode/vsce package --no-dependencies --allow-missing-repository --skip-license"
   },
   "dependencies": {
-    "@buildr/core": "workspace:*"
+    "@buildr/core": "workspace:*",
+    "markdown-it": "^14.1.0"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^22.10.5",
     "@types/vscode": "^1.96.0",
     "esbuild": "^0.21.5",
